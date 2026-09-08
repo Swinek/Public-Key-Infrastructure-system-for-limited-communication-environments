@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: pki-db
+    restart: always
+    environment:
+      POSTGRES_USER: pki_admin
+      POSTGRES_PASSWORD: pki_secure_password
+      POSTGRES_DB: pki_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - pki-network
+
+  backend:
+    build: ./backend
+    container_name: pki-backend
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      PORT: 5000
+      DATABASE_URL: postgres://pki_admin:pki_secure_password@db:5432/pki_db
+    depends_on:
+      - db
+    networks:
+      - pki-network
+
+  frontend:
+    build: ./frontend
+    container_name: pki-frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - pki-network
+
+networks:
+  pki-network:
+    driver: bridge
+
+volumes:
+  pgdata:
