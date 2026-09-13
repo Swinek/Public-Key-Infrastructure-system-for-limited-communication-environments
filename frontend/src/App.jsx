@@ -22,26 +22,21 @@ const API_URL = 'http://localhost:5000/api';
 function App() {
   const [users, setUsers] = useState([]);
   const [certs, setCerts] = useState([]);
-  const [activeTab, setActiveTab] = useState('users'); // 'users' or 'certs'
+  const [activeTab, setActiveTab] = useState('users');
   
-  // State for user registration form
   const [newUsername, setNewUsername] = useState('');
   const [newEmail, setNewEmail] = useState('');
   const [newRole, setNewRole] = useState('user');
 
-  // State for revocation modal
   const [showRevokeModal, setShowRevokeModal] = useState(false);
   const [selectedCertId, setSelectedCertId] = useState(null);
   const [revocationReason, setRevocationReason] = useState('');
 
-  // Search state
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Role switching / user simulation states
-  const [currentRoleView, setCurrentRoleView] = useState('admin'); // 'admin' or logged-in user ID
+  const [currentRoleView, setCurrentRoleView] = useState('admin');
   const [loggedInUser, setLoggedInUser] = useState(null);
 
-  // Fetch initial data on load
   useEffect(() => {
     fetchUsers();
     fetchCerts();
@@ -51,7 +46,6 @@ function App() {
     try {
       const res = await axios.get(`${API_URL}/users`);
       setUsers(res.data);
-      // Update logged-in user details if in user view
       if (currentRoleView !== 'admin') {
         const updatedUser = res.data.find(u => u.id === Number(currentRoleView));
         if (updatedUser) setLoggedInUser(updatedUser);
@@ -70,7 +64,6 @@ function App() {
     }
   };
 
-  // Handle user view switcher
   const handleRoleViewChange = (val) => {
     setCurrentRoleView(val);
     
@@ -142,7 +135,6 @@ function App() {
     }
   };
 
-  // Get active certificate details for logged-in user
   const getLoggedInUserCertDetails = () => {
     if (!loggedInUser) return null;
     return certs.find(c => c.user_id === loggedInUser.id);
@@ -150,7 +142,6 @@ function App() {
 
   const userCert = getLoggedInUserCertDetails();
 
-  // Search filter
   const filteredUsers = users.filter(user => 
     user.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
     user.email.toLowerCase().includes(searchQuery.toLowerCase())
@@ -164,10 +155,8 @@ function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 antialiased font-sans">
       
-      {/* Navigation Bar */}
       <nav className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
         <div className="max-w-7xl mx-auto px-6 py-4 flex justify-end items-center">
-          {/* User Switcher / Role Simulation */}
           <div className="flex items-center gap-3">
             <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider hidden md:block">Logged in as:</label>
             <select
@@ -194,11 +183,9 @@ function App() {
         </div>
       </nav>
 
-      {/* --- ADMINISTRATOR VIEW --- */}
       {currentRoleView === 'admin' ? (
         <main className="max-w-7xl mx-auto px-6 py-8">
           
-          {/* Metrics */}
           <section className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
             <div className="bg-white border border-slate-200 p-6 rounded-xl shadow-sm flex items-center gap-4">
               <div className="p-3 bg-blue-50 text-blue-600 rounded-lg border border-blue-100">
@@ -235,7 +222,6 @@ function App() {
             </div>
           </section>
 
-          {/* Search / Tabs Bar */}
           <div className="bg-white border border-slate-200 rounded-xl p-4 mb-8 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div className="flex bg-slate-100 p-1 rounded-lg w-fit border border-slate-200">
               <button 
@@ -274,7 +260,6 @@ function App() {
 
           {activeTab === 'users' ? (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              {/* Add User Form */}
               <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm h-fit">
                 <h3 className="text-sm font-semibold text-slate-900 mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
                   <UserPlus className="w-4 h-4 text-slate-500" />
@@ -332,7 +317,6 @@ function App() {
                 </form>
               </div>
 
-              {/* Users Table */}
               <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
                 <table className="w-full text-left border-collapse">
                   <thead>
@@ -411,7 +395,6 @@ function App() {
               </div>
             </div>
           ) : (
-            /* Certificate Registry Tab */
             <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
               <table className="w-full text-left border-collapse">
                 <thead>
@@ -478,12 +461,10 @@ function App() {
           )}
         </main>
       ) : (
-        /* --- LOGGED-IN USER VIEW --- */
         <main className="max-w-4xl mx-auto px-6 py-8">
           {loggedInUser && (
             <div className="space-y-6">
               
-              {/* User Welcome Banner */}
               <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
                 <div className="flex items-center gap-4">
                   <div className="p-3 bg-slate-100 text-slate-700 rounded-full border border-slate-200">
@@ -504,7 +485,6 @@ function App() {
                 </button>
               </div>
 
-              {/* User Certificate Status */}
               <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
                 <h3 className="text-sm font-semibold text-slate-900 mb-4 pb-3 border-b border-slate-100 flex items-center gap-2">
                   <ShieldCheck className="w-4 h-4 text-slate-500" />
@@ -582,7 +562,6 @@ function App() {
         </main>
       )}
 
-      {/* Revocation Modal */}
       {showRevokeModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
           <div className="w-full max-w-md bg-white border border-slate-200 rounded-xl p-6 shadow-xl">

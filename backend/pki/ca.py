@@ -50,7 +50,6 @@ def initialize_ca():
         .sign(private_key, hashes.SHA256())
     )
 
-    # Zapisuje prywatny klucz CA
     CA_KEY_PATH.write_bytes(
         private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
@@ -59,7 +58,6 @@ def initialize_ca():
         )
     )
 
-    # Zapisuje certyfikat CA
     CA_CERT_PATH.write_bytes(
         certificate.public_bytes(serialization.Encoding.PEM)
     )
