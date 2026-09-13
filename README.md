@@ -16,11 +16,10 @@ Niniejszy projekt stanowi implementację i demonstrację systemu PKI. Umożliwia
 
 ```
 
-### Struktura katalogów
 
 Kod backendu zorganizowano w sposób modułowy, separując punkty wejścia API, modele walidacyjne i silnik kryptograficzny:
 
-```text
+
 projekt_inzynierski/
 ├── docker-compose.yml       # Orkiestracja kontenerów (PostgreSQL, Backend, Frontend)
 ├── README.md                # Główna dokumentacja projektu
@@ -67,7 +66,7 @@ System posiada wbudowany silnik kryptograficzny oparty o bibliotekę `cryptograp
 * Tworzony jest certyfikat X.509 podpisany kluczem Root CA z okresem ważności 1 roku.
 * Certyfikat zawiera podmiot (`CN=username`, `EMAIL=email`), unikalny numer seryjny oraz wyliczony odcisk palca (**SHA-256 fingerprint**).
 * Certyfikat publiczny w formacie PEM trafia do bazy PostgreSQL.
-* **Klucz prywatny użytkownika zwracany jest jednorazowo** w odpowiedzi API przy wystawieniu certyfikatu (nie jest zapisywany w centralnej bazie danych, co odpowiada dobrym praktykom bezpieczeństwa).
+* **Klucz prywatny użytkownika zwracany jest jednorazowo** w odpowiedzi API przy wystawieniu certyfikatu.
 
 ---
 
@@ -79,39 +78,21 @@ System posiada wbudowany silnik kryptograficzny oparty o bibliotekę `cryptograp
 | **Kryptografia** | Python `cryptography` (X.509 / hazmat) | Generowanie kluczy RSA (4096/2048 bit), tworzenie i podpisywanie certyfikatów X.509, formatowanie PEM/PKCS#8, SHA-256 fingerprint |
 | **Baza Danych** | PostgreSQL 15, asyncpg | Relacyjny magazyn węzłów, certyfikatów X.509, fingerprintów i wpisów unieważnień |
 | **Frontend** | React 18, Vite, Tailwind CSS | Nowoczesny, responsywny dashboard operatorski z obsługą ról |
-| **Ikony & UI** | Lucide Icons, Inter Font | Minimalistyczny i czytelny interfejs użytkownika |
 | **Konteneryzacja** | Docker, Docker Compose | Powtarzalne, izolowane środowisko uruchomieniowe |
 
 ---
 
-## Szybki Start (Uruchomienie)
-
-Wymagania wstępne:
-* Zainstalowany **Docker** oraz wtyczka **Docker Compose** (`docker compose version`).
-
-### 1. Klonowanie repozytorium
-```bash
-git clone https://github.com/Swinek/Public-Key-Infrastructure-system-for-limited-communication-environments.git
-cd Public-Key-Infrastructure-system-for-limited-communication-environments
-```
-
-### 2. Uruchomienie aplikacji w kontenerach
-W katalogu głównym projektu wykonaj:
-
+## Uruchomienie
 ```bash
 docker compose up --build -d
 ```
 
-Polecenie automatycznie:
-1. Pobierze i uruchomi kontener bazy danych **PostgreSQL 15** wraz z inicjalizacją schematu (`init.sql`).
-2. Zbuduje i uruchomi kontener z backendem **FastAPI**, inicjalizując bazę oraz Root CA (`pki_data/`).
-3. Zbuduje i uruchomi kontener z panelem frontendowym **React/Vite** na porcie `3000`.
 
-### 3. Dostęp do usług
+### Dostęp do usług
 
 | Usługa | Adres URL | Opis |
 | :--- | :--- | :--- |
-| **Frontend)* | [http://localhost:3000](http://localhost:3000) | Główny pulpit zarządzania PKI |
+| **Frontend** | [http://localhost:3000](http://localhost:3000) | Główny pulpit zarządzania PKI |
 |  **Backend** | [http://localhost:5000/docs](http://localhost:5000/docs) | Interaktywna dokumentacja REST API |
 
 ---
@@ -132,9 +113,6 @@ Aplikacja została zaprojektowana z myślą o czytelnej demonstracji działania 
 5. **Unieważnienie certyfikatu (CRL):**
    * Wybierz **„Revoke”** przy aktywnym użytkowniku, podaj przyczynę (np. *„Key Compromise / Token lost”*) i zatwierdź.
    * Certyfikat natychmiast zmienia status na `Revoked (CRL)` z zapisanym powodem i datą wycofania.
-6. **Symulacja perspektywy Stacji Polowej:**
-   * Użyj selektora w prawym górnym rogu (*„Logged in as:”*), aby przełączyć się z widoku Administratora na konto konkretnego użytkownika.
-   * Zobacz, jak stacja końcowa widzi stan swoich poświadczeń (aktywne vs unieważnione).
 
 ---
 
