@@ -1,6 +1,6 @@
 import logging
 import os
-import random
+from pki.ca import initialize_ca, issue_user_certificate
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -23,8 +23,13 @@ logger = logging.getLogger("pki_backend")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting PKI Backend with FastAPI...")
+
+    initialize_ca()
+
     await init_db()
+
     yield
+
     logger.info("Shutting down PKI Backend...")
     await close_db()
 
@@ -168,32 +173,87 @@ async def get_certificates():
 
 @api_router.post("/certificates", status_code=201)
 async def issue_certificate(payload: CertificateCreate):
-    """Issue a new certificate to a user."""
+
     try:
         pool = get_pool()
+
         async with pool.acquire() as conn:
-            # Check if user already has an active certificate
+
             check_active = await conn.fetchval(
-                "SELECT id FROM certificates WHERE user_id = $1 AND status = 'ACTIVE'",
+                """
+                SELECT id
+                FROM certificates
+                WHERE user_id = $1
+                AND status = 'ACTIVE'
+                """,
                 payload.userId
             )
+
             if check_active is not None:
                 return JSONResponse(
                     status_code=400,
-                    content={"error": "User already possesses an active certificate/signature."}
+                    content={
+                        "error": "User already possesses an active certificate."
+                    }
                 )
 
-            # Generate serial number
-            serial_number = f"SN-{random.randint(1000000000, 9999999999)}"
+            user = await conn.fetchrow(
+                """
+                SELECT username, email
+                FROM users
+                WHERE id = $1
+                """,
+                payload.userId
+            )
+
+            if user is None:
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": "User not found"}
+                )
+
+            cert_data = issue_user_certificate(
+                username=user["username"],
+                email=user["email"]
+            )
 
             row = await conn.fetchrow(
-                "INSERT INTO certificates (user_id, serial_number, status) VALUES ($1, $2, 'ACTIVE') RETURNING *",
+                """
+                INSERT INTO certificates (
+                    user_id,
+                    serial_number,
+                    certificate_pem,
+                    fingerprint,
+                    valid_from,
+                    valid_to,
+                    status
+                )
+                VALUES (
+                    $1, $2, $3, $4, $5, $6, 'ACTIVE'
+                )
+                RETURNING *
+                """,
                 payload.userId,
-                serial_number
+                cert_data["serial_number"],
+                cert_data["certificate_pem"],
+                cert_data["fingerprint"],
+                cert_data["valid_from"],
+                cert_data["valid_to"]
             )
-            return record_to_dict(row)
+
+            result = record_to_dict(row)
+
+            # Only returned once during issuance.
+            result["private_key"] = cert_data["private_key_pem"]
+
+            return result
+
     except Exception as exc:
-        logger.exception("Error generating certificate: %s", exc)
+        logger.exception(
+            "Error generating certificate: %s",
+            exc
+        )
+
         return JSONResponse(
             status_code=500,
             content={"error": "Error generating certificate"}

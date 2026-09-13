@@ -9,8 +9,17 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS certificates (
     id SERIAL PRIMARY KEY,
     user_id INT REFERENCES users(id) ON DELETE CASCADE,
+
     serial_number VARCHAR(100) UNIQUE NOT NULL,
-    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE', -- ACTIVE, REVOKED
+
+    certificate_pem TEXT,
+    fingerprint VARCHAR(128),
+
+    valid_from TIMESTAMPTZ,
+    valid_to TIMESTAMPTZ,
+
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+
     issued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     revoked_at TIMESTAMP NULL,
     revocation_reason VARCHAR(255) NULL
