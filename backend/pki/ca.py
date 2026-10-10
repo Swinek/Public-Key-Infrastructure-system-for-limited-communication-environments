@@ -7,9 +7,11 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 
-PKI_DIR = Path("pki_data")
+PKI_DIR = Path(__file__).resolve().parent.parent / "pki_data"
 CA_KEY_PATH = PKI_DIR / "ca_private_key.pem"
 CA_CERT_PATH = PKI_DIR / "ca_certificate.pem"
+CRL_PEM_PATH = PKI_DIR / "crl.pem"
+CRL_DER_PATH = PKI_DIR / "crl.der"
 
 
 def initialize_ca():
@@ -132,3 +134,69 @@ def issue_user_certificate(username: str, email: str):
         "valid_from": certificate.not_valid_before_utc,
         "valid_to": certificate.not_valid_after_utc,
     }
+
+
+def generate_crl(revoked_records: list[dict]) -> bytes:
+    """
+    Generates and saves a Certificate Revocation List (CRL) signed by the Root CA.
+    revoked_records: list of dicts with keys 'serial_number' (str) and 'revoked_at' (datetime)
+    """
+    if not CA_KEY_PATH.exists() or not CA_CERT_PATH.exists():
+        initialize_ca()
+
+    ca_private_key = serialization.load_pem_private_key(
+        CA_KEY_PATH.read_bytes(),
+        password=None
+    )
+    ca_certificate = x509.load_pem_x509_certificate(
+        CA_CERT_PATH.read_bytes()
+    )
+
+    now = datetime.now(timezone.utc)
+    builder = (
+        x509.CertificateRevocationListBuilder()
+        .issuer_name(ca_certificate.subject)
+        .last_update(now)
+        .next_update(now + timedelta(days=7))
+    )
+
+    for item in revoked_records:
+        serial_raw = str(item.get("serial_number", "")).strip()
+        if not serial_raw:
+            continue
+        try:
+            serial_int = int(serial_raw)
+        except ValueError:
+            if serial_raw.startswith("SN-"):
+                try:
+                    serial_int = int(serial_raw.replace("SN-", ""))
+                except ValueError:
+                    continue
+            else:
+                try:
+                    serial_int = int(serial_raw, 16)
+                except ValueError:
+                    continue
+
+        revoked_at = item.get("revoked_at")
+        if not revoked_at:
+            revoked_at = now
+        elif revoked_at.tzinfo is None:
+            revoked_at = revoked_at.replace(tzinfo=timezone.utc)
+
+        revoked_cert_builder = (
+            x509.RevokedCertificateBuilder()
+            .serial_number(serial_int)
+            .revocation_date(revoked_at)
+        )
+        builder = builder.add_revoked_certificate(revoked_cert_builder.build())
+
+    crl = builder.sign(ca_private_key, hashes.SHA256())
+    crl_pem = crl.public_bytes(serialization.Encoding.PEM)
+    crl_der = crl.public_bytes(serialization.Encoding.DER)
+
+    PKI_DIR.mkdir(exist_ok=True)
+    CRL_PEM_PATH.write_bytes(crl_pem)
+    CRL_DER_PATH.write_bytes(crl_der)
+
+    return crl_pem

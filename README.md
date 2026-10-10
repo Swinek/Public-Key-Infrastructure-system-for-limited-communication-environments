@@ -125,11 +125,28 @@ Aplikacja została zaprojektowana z myślą o czytelnej demonstracji działania 
 | `DELETE`| `/api/users/{id}` | Usunięcie węzła wraz z kaskadowym wyczyszczeniem jego certyfikatów |
 | `GET` | `/api/certificates` | Pobranie rejestru wszystkich certyfikatów (PEM, fingerprint, daty ważności, status) |
 | `POST` | `/api/certificates` | Wystawienie certyfikatu X.509 podpisanego przez Root CA (zwraca certyfikat i klucz prywatny) |
-| `POST` | `/api/certificates/revoke` | Unieważnienie certyfikatu i dodanie wpisu do rejestru odwołań (CRL) |
+| `POST` | `/api/certificates/revoke` | Unieważnienie certyfikatu i aktualizacja rejestru odwołań (CRL) |
+| `GET` | `/api/certificates/ca/download` | Pobranie certyfikatu Root CA (`ca_certificate.pem`) do instalacji na węzłach polowych |
+| `GET` | `/api/certificates/crl/download` | Pobranie aktualnej listy odwołań (`crl.pem`) do weryfikacji offline |
 | `GET` | `/api/health` | Status działania serwera backendowego |
 | `GET` | `/docs` | Interaktywna dokumentacja Swagger UI |
 
 ---
 
----
+## Demonstracja Uwierzytelniania Offline (Radio / Maszyna Wirtualna)
+
+W katalogu `scripts/` przygotowano gotowe narzędzia demonstracyjne symulujące handshake i autoryzację węzłów w odciętym środowisku (fale radiowe / brak Internetu):
+
+1. **Weryfikacja OpenSSL (uniwersalna, bez zależności):**
+   ```bash
+   bash scripts/demo_offline_auth.sh
+   # Lub z własnymi pobranymi plikami:
+   bash scripts/demo_offline_auth.sh node_cert.pem node_private.key ca_certificate.pem crl.pem
+   ```
+
+2. **Weryfikacja Python (z biblioteką cryptography):**
+   ```bash
+   python3 scripts/demo_offline_auth.py --cert node_cert.pem --key node_private.key --ca ca_certificate.pem --crl crl.pem
+   ```
+
 

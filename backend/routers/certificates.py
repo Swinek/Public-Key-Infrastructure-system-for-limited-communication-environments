@@ -1,9 +1,15 @@
 import logging
-from fastapi import APIRouter
+from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse
 
 from database import get_pool, record_to_dict, records_to_list
-from pki.ca import issue_user_certificate
+from pki.ca import (
+    CA_CERT_PATH,
+    CRL_PEM_PATH,
+    generate_crl,
+    initialize_ca,
+    issue_user_certificate,
+)
 from schemas import CertificateCreate, CertificateRevoke
 
 logger = logging.getLogger("pki_backend.certificates")
@@ -138,6 +144,16 @@ async def revoke_certificate(payload: CertificateRevoke):
                     status_code=400,
                     content={"error": "Certificate does not exist or has already been revoked."}
                 )
+
+            # Rebuild CRL file dynamically with all currently revoked certificates
+            try:
+                revoked_rows = await conn.fetch(
+                    "SELECT serial_number, revoked_at FROM certificates WHERE status = 'REVOKED'"
+                )
+                generate_crl([dict(r) for r in revoked_rows])
+            except Exception as crl_err:
+                logger.warning("Failed to regenerate CRL file on revocation: %s", crl_err)
+
             return record_to_dict(row)
     except Exception as exc:
         logger.exception("Error revoking certificate: %s", exc)
@@ -145,3 +161,50 @@ async def revoke_certificate(payload: CertificateRevoke):
             status_code=500,
             content={"error": "Error revoking certificate"}
         )
+
+
+@router.get("/ca/download")
+@router.get("/ca")
+async def download_ca_certificate():
+    """Download the Root CA certificate (PEM)."""
+    if not CA_CERT_PATH.exists():
+        initialize_ca()
+
+    return Response(
+        content=CA_CERT_PATH.read_bytes(),
+        media_type="application/x-pem-file",
+        headers={
+            "Content-Disposition": 'attachment; filename="ca_certificate.pem"'
+        }
+    )
+
+
+@router.get("/crl/download")
+@router.get("/crl")
+async def download_crl():
+    """Download the latest Certificate Revocation List (CRL)."""
+    if not CRL_PEM_PATH.exists():
+        try:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                revoked_rows = await conn.fetch(
+                    "SELECT serial_number, revoked_at FROM certificates WHERE status = 'REVOKED'"
+                )
+                generate_crl([dict(r) for r in revoked_rows])
+        except Exception as crl_err:
+            logger.warning("Could not auto-generate initial CRL: %s", crl_err)
+
+    if not CRL_PEM_PATH.exists():
+        return JSONResponse(
+            status_code=404,
+            content={"error": "CRL file not found"}
+        )
+
+    return Response(
+        content=CRL_PEM_PATH.read_bytes(),
+        media_type="application/x-pem-file",
+        headers={
+            "Content-Disposition": 'attachment; filename="crl.pem"'
+        }
+    )
+

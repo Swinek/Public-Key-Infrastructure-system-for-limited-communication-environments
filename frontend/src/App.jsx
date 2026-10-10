@@ -14,10 +14,25 @@ import {
   User, 
   Calendar, 
   LogOut, 
-  Download 
+  Download,
+  Key,
+  Radio
 } from 'lucide-react';
 
 const API_URL = 'http://localhost:5000/api';
+
+const downloadFile = (filename, content, mimeType = 'application/x-pem-file') => {
+  if (!content) return;
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+};
 
 function App() {
   const [users, setUsers] = useState([]);
@@ -36,6 +51,39 @@ function App() {
 
   const [currentRoleView, setCurrentRoleView] = useState('admin');
   const [loggedInUser, setLoggedInUser] = useState(null);
+  const [newlyIssuedCert, setNewlyIssuedCert] = useState(null);
+
+  const handleDownloadCaCert = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/certificates/ca/download`, { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'ca_certificate.pem';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert('Nie udało się pobrać certyfikatu Root CA.');
+    }
+  };
+
+  const handleDownloadCrl = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/certificates/crl/download`, { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'crl.pem';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert('Nie udało się pobrać listy unieważnień CRL.');
+    }
+  };
 
   useEffect(() => {
     fetchUsers();
@@ -107,9 +155,14 @@ function App() {
 
   const handleIssueCert = async (userId) => {
     try {
-      await axios.post(`${API_URL}/certificates`, { userId });
+      const res = await axios.post(`${API_URL}/certificates`, { userId });
       fetchUsers();
       fetchCerts();
+      const targetUser = users.find(u => u.id === userId);
+      setNewlyIssuedCert({
+        ...res.data,
+        targetUsername: targetUser ? targetUser.username : 'node'
+      });
     } catch (err) {
       alert(err.response?.data?.error || 'Error generating certificate.');
     }
@@ -246,15 +299,35 @@ function App() {
               </button>
             </div>
 
-            <div className="relative w-full md:w-80">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input 
-                type="text" 
-                placeholder={activeTab === 'users' ? 'Search by username or email...' : 'Search by name or serial number...'}
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg pl-9 pr-4 py-2 text-sm outline-none transition-all text-slate-900"
-              />
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={handleDownloadCaCert}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 transition-colors shadow-2xs cursor-pointer"
+                title="Pobierz certyfikat Root CA do dystrybucji na stacje polowe / węzły offline"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+                Root CA (.pem)
+              </button>
+
+              <button
+                onClick={handleDownloadCrl}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors shadow-2xs cursor-pointer"
+                title="Pobierz listę odwołań CRL do aktualizacji węzłów"
+              >
+                <ShieldAlert className="w-3.5 h-3.5 text-slate-500" />
+                CRL (.pem)
+              </button>
+
+              <div className="relative w-full md:w-72">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input 
+                  type="text" 
+                  placeholder={activeTab === 'users' ? 'Search by username or email...' : 'Search by name or serial number...'}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg pl-9 pr-4 py-2 text-sm outline-none transition-all text-slate-900"
+                />
+              </div>
             </div>
           </div>
 
@@ -404,6 +477,7 @@ function App() {
                     <th className="px-6 py-4">Certificate Status</th>
                     <th className="px-6 py-4">Validity Dates</th>
                     <th className="px-6 py-4">Revocation Reason</th>
+                    <th className="px-6 py-4 text-right">Certificate Export</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -446,11 +520,25 @@ function App() {
                           </span>
                         ) : '-'}
                       </td>
+                      <td className="px-6 py-4 text-right">
+                        {cert.certificate_pem ? (
+                          <button
+                            onClick={() => downloadFile(`${cert.username}_cert.pem`, cert.certificate_pem)}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg border border-indigo-200 transition-colors shadow-2xs cursor-pointer"
+                            title="Pobierz certyfikat węzła (PEM)"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            Download PEM
+                          </button>
+                        ) : (
+                          <span className="text-[11px] text-slate-400 italic">No PEM (Seed)</span>
+                        )}
+                      </td>
                     </tr>
                   ))}
                   {filteredCerts.length === 0 && (
                     <tr>
-                      <td colSpan="5" className="text-center py-10 text-slate-400 text-sm">
+                      <td colSpan="6" className="text-center py-10 text-slate-400 text-sm">
                         No records found in certificate registry.
                       </td>
                     </tr>
@@ -512,14 +600,51 @@ function App() {
                       </div>
                     </div>
 
-                    <div className="pt-2">
-                      <button 
-                        onClick={() => alert(`--- MOCK CERTIFICATE PEM ---\nSerialNumber: ${userCert.serial_number}\nSubject: CN=${loggedInUser.username}\nIssuer: CN=Mock-Local-CA\n--- END CERTIFICATE ---`)}
-                        className="inline-flex items-center gap-2 px-3 py-2 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg border border-indigo-200 transition-colors"
-                      >
-                        <Download className="w-3.5 h-3.5" />
-                        Download Certificate (PEM)
-                      </button>
+                    <div className="pt-3 border-t border-slate-100">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Radio className="w-4 h-4 text-indigo-600" />
+                        <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700">
+                          Poświadczenia węzła brzegowego (Komunikacja offline / radio)
+                        </h4>
+                      </div>
+                      <p className="text-xs text-slate-500 mb-3">
+                        W środowisku bez dostępu do internetu węzeł weryfikuje tożsamość innych stacji za pomocą lokalnego certyfikatu Root CA oraz listy CRL.
+                      </p>
+
+                      <div className="flex flex-wrap gap-2.5">
+                        <button 
+                          onClick={() => {
+                            if (!userCert.certificate_pem) {
+                              alert('Brak danych certyfikatu PEM dla tego rekordu (początkowy wpis testowy w bazie). Wygeneruj nowy certyfikat dla tego węzła w panelu Administratora.');
+                              return;
+                            }
+                            downloadFile(`${loggedInUser.username}_cert.pem`, userCert.certificate_pem);
+                          }}
+                          className="inline-flex items-center gap-2 px-3 py-2 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg border border-indigo-200 transition-colors shadow-2xs cursor-pointer"
+                          title="Pobierz certyfikat X.509 tego węzła"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                          Download Certificate (PEM)
+                        </button>
+
+                        <button 
+                          onClick={handleDownloadCaCert}
+                          className="inline-flex items-center gap-2 px-3 py-2 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 transition-colors shadow-2xs cursor-pointer"
+                          title="Pobierz certyfikat Root CA zaufanego urzędu"
+                        >
+                          <ShieldCheck className="w-3.5 h-3.5" />
+                          Download Root CA (PEM)
+                        </button>
+
+                        <button 
+                          onClick={handleDownloadCrl}
+                          className="inline-flex items-center gap-2 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors shadow-2xs cursor-pointer"
+                          title="Pobierz najnowszą listę unieważnień CRL"
+                        >
+                          <ShieldAlert className="w-3.5 h-3.5" />
+                          Download CRL (PEM)
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ) : userCert && userCert.status === 'REVOKED' ? (
@@ -545,6 +670,17 @@ function App() {
                         <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Revocation Date</p>
                         <p className="text-sm text-slate-600 mt-0.5">{new Date(userCert.revoked_at).toLocaleString('en-US')}</p>
                       </div>
+                    </div>
+
+                    <div className="pt-2">
+                      <button 
+                        onClick={handleDownloadCrl}
+                        className="inline-flex items-center gap-2 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg border border-slate-300 transition-colors cursor-pointer"
+                        title="Pobierz aktualną listę CRL"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        Download Updated CRL (PEM)
+                      </button>
                     </div>
                   </div>
                 ) : (
@@ -595,6 +731,99 @@ function App() {
                 className="px-3 py-2 rounded-lg text-xs font-medium text-white bg-rose-600 hover:bg-rose-700 transition-colors shadow-sm"
               >
                 Confirm Revocation
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {newlyIssuedCert && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
+          <div className="w-full max-w-lg bg-white border border-slate-200 rounded-xl p-6 shadow-xl space-y-4">
+            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-100 text-emerald-700 rounded-lg">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Wydano poświadczenia węzła brzegowego
+                  </h3>
+                  <p className="text-xs text-slate-500">
+                    Węzeł: <span className="font-semibold text-slate-800">{newlyIssuedCert.targetUsername}</span> &bull; SN: <span className="font-mono">{newlyIssuedCert.serial_number}</span>
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold">Klucz prywatny jest zwracany jednorazowo!</span>
+                <p className="mt-0.5 text-amber-700">
+                  Zgodnie z zasadami PKI, serwer nie przechowuje klucza prywatnego węzła. Pobierz go teraz i skopiuj na maszynę wirtualną / do stacji polowej, aby umożliwić podpisywanie transmisji radiowej.
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
+                Pobierz pakiet tożsamości do maszyny wirtualnej (offline):
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <button
+                  onClick={() => downloadFile(`${newlyIssuedCert.targetUsername}_cert.pem`, newlyIssuedCert.certificate_pem)}
+                  className="flex items-center gap-2 p-2.5 rounded-lg border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold transition-colors cursor-pointer text-left"
+                >
+                  <Download className="w-4 h-4 shrink-0" />
+                  <div>
+                    <p className="font-bold">Certyfikat węzła</p>
+                    <p className="text-[10px] text-indigo-500 font-normal">{newlyIssuedCert.targetUsername}_cert.pem</p>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => downloadFile(`${newlyIssuedCert.targetUsername}_private.key`, newlyIssuedCert.private_key, 'application/x-pem-file')}
+                  className="flex items-center gap-2 p-2.5 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold transition-colors cursor-pointer text-left"
+                >
+                  <Key className="w-4 h-4 shrink-0" />
+                  <div>
+                    <p className="font-bold">Klucz prywatny węzła</p>
+                    <p className="text-[10px] text-rose-500 font-normal">{newlyIssuedCert.targetUsername}_private.key</p>
+                  </div>
+                </button>
+
+                <button
+                  onClick={handleDownloadCaCert}
+                  className="flex items-center gap-2 p-2.5 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-semibold transition-colors cursor-pointer text-left"
+                >
+                  <ShieldCheck className="w-4 h-4 shrink-0" />
+                  <div>
+                    <p className="font-bold">Certyfikat Root CA</p>
+                    <p className="text-[10px] text-emerald-500 font-normal">ca_certificate.pem</p>
+                  </div>
+                </button>
+
+                <button
+                  onClick={handleDownloadCrl}
+                  className="flex items-center gap-2 p-2.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold transition-colors cursor-pointer text-left"
+                >
+                  <ShieldAlert className="w-4 h-4 shrink-0" />
+                  <div>
+                    <p className="font-bold">Lista odwołań CRL</p>
+                    <p className="text-[10px] text-slate-500 font-normal">crl.pem</p>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <div className="border-t border-slate-100 pt-3 flex justify-end">
+              <button
+                onClick={() => setNewlyIssuedCert(null)}
+                className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-slate-800 hover:bg-slate-900 transition-colors cursor-pointer"
+              >
+                Zamknij okno
               </button>
             </div>
           </div>
