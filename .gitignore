@@ -1,0 +1,8 @@
+pki_data/
+*.key
+*.pem
+__pycache__/
+*.pyc
+node_modules/
+dist/
+NOTATKI_ARCHITEKTURA.md
