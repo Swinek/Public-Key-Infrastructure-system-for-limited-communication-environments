@@ -17,36 +17,49 @@ Niniejszy projekt stanowi implementację i demonstrację systemu PKI. Umożliwia
 ```
 
 
-Kod backendu zorganizowano w sposób modułowy, separując punkty wejścia API, modele walidacyjne i silnik kryptograficzny:
-
-
+```
 projekt_inzynierski/
-├── docker-compose.yml       # Orkiestracja kontenerów (PostgreSQL, Backend, Frontend)
-├── README.md                # Główna dokumentacja projektu
-├── backend/
-│   ├── Dockerfile           # Obraz backendu oparty o python:3.11-slim
-│   ├── requirements.txt     # Zależności (fastapi, uvicorn, asyncpg, pydantic, cryptography)
-│   ├── main.py              # Inicjalizacja FastAPI, lifespan (CA + DB), CORS, rejestracja routerów
-│   ├── database.py          # Asynchroniczny pool połączeń PostgreSQL (asyncpg)
-│   ├── schemas.py           # Modele walidacyjne Pydantic (UserCreate, CertificateCreate, CertificateRevoke)
-│   ├── init.sql             # Schemat bazy danych (tabele users, certificates)
-│   ├── routers/             # Moduły punktów końcowych API
-│   │   ├── __init__.py
-│   │   ├── users.py         # Zarządzanie węzłami/użytkownikami (/api/users)
-│   │   ├── certificates.py  # Wystawianie X.509, rejestr certyfikatów i CRL (/api/certificates)
-│   │   └── health.py        # Status i kondycja serwera (/api/health)
-│   └── pki/                 # Moduł kryptograficzny PKI
-│       ├── __init__.py
-│       └── ca.py            # Generowanie Root CA (RSA 4096) oraz certyfikatów X.509
-└── frontend/
-    ├── Dockerfile           # Obraz środowiska deweloperskiego Node.js
-    ├── package.json         # Zależności (react, axios, lucide-react, tailwindcss)
-    ├── vite.config.js       # Konfiguracja serwera deweloperskiego Vite
-    ├── tailwind.config.js   # Konfiguracja Tailwind CSS
-    └── src/
-        ├── App.jsx          # Główny dashboard (widok administratora i stacji polowej)
-        ├── main.jsx         # Punkt startowy aplikacji React
-        └── index.css        # Style bazowe i dyrektywy Tailwind
+├── docker-compose.yml           # Orkiestracja kontenerów (PostgreSQL, Admin CA, Client Portal)
+├── client.sh                    # Skrypt pomocniczy do węzłów brzegowych (deleguje do edges/client.sh)
+├── README.md                    # Główna dokumentacja projektu
+│
+├── admin/                       # Panel Administratora Root CA
+│   ├── backend/                 # Backend Urzędu Root CA (port 5000)
+│   │   ├── Dockerfile           # Obraz oparty o python:3.11-slim
+│   │   ├── requirements.txt     # Zależności (fastapi, uvicorn, asyncpg, pydantic, cryptography)
+│   │   ├── main.py              # API Root CA, lifespan (inicjalizacja CA + DB), CORS
+│   │   ├── database.py          # Pula połączeń PostgreSQL (asyncpg)
+│   │   ├── schemas.py           # Modele walidacyjne Pydantic
+│   │   ├── init.sql             # Schemat bazy danych (tabele users, certificates)
+│   │   ├── pki_data/            # Klucze Root CA (ca_private_key.pem, ca_certificate.pem, crl.pem)
+│   │   ├── routers/             # Endpointy: /api/users, /api/certificates, /api/health
+│   │   └── pki/                 # Silnik CA (ca.py - RSA 4096, X.509, generowanie CRL)
+│   └── frontend/                # Panel Administratora Root CA (port 3000)
+│       ├── Dockerfile           # Środowisko Node.js 18
+│       ├── package.json         # React 18, Vite, Tailwind CSS, Lucide
+│       └── src/App.jsx          # Pulpit zarządzania węzłami, wystawiania X.509 i rejestru CRL
+│
+├── clients/                     # Panel Samoobsługowy Klienta
+│   ├── backend/                 # Backend Portalu Klienta / Weryfikacji (port 5001)
+│   │   ├── Dockerfile           # Obraz python:3.11-slim
+│   │   ├── requirements.txt     # Zależności (fastapi, uvicorn, asyncpg, pydantic, httpx)
+│   │   ├── main.py              # API Klienta / RA (BEZ DOSTĘPU DO KLUCZA ROOT CA!)
+│   │   ├── database.py          # Połączenie do bazy (odczyt poświadczeń węzłów)
+│   │   └── routers/             # Endpointy read-only: /api/users, /api/certificates, proxy CA/CRL
+│   └── frontend/                # Portal Samoobsługowy Klienta / Węzłów Polowych (port 3001)
+│       ├── Dockerfile           # Środowisko Node.js 18
+│       ├── package.json         # React 18, Vite, Tailwind CSS, Lucide
+│       └── src/App.jsx          # Wybór tożsamości węzła, pobieranie certyfikatu PEM, Root CA i CRL
+│
+├── edges/                       # Węzły brzegowe / statki (symulacja sieci P2P w trybie offline)
+│   ├── docker-compose.yml       # Orkiestracja węzłów (client_1, client_2, gateway)
+│   ├── client.sh                # Skrypt sterowania węzłami i symulacją łącza Internet/P2P
+│   ├── client_node.py           # Aplikacja węzła brzegowego (FastAPI)
+│   ├── routers/                 # Endpointy P2P, diagnostyki sieci i testu łączności
+│   ├── static/                  # Panel graficzny węzła brzegowego
+│   └── nginx_gateway.conf       # Konfiguracja reverse proxy dla portów 8001 i 8002
+│
+└── scripts/                     # Skrypty demonstracyjne offline auth (OpenSSL / Python)
 ```
 
 ---
@@ -88,12 +101,15 @@ docker compose up --build -d
 ```
 
 
-### Dostęp do usług
+### Dostęp do usług (Rozdzielona Architektura)
 
-| Usługa | Adres URL | Opis |
-| :--- | :--- | :--- |
-| **Frontend** | [http://localhost:3000](http://localhost:3000) | Główny pulpit zarządzania PKI |
-|  **Backend** | [http://localhost:5000/docs](http://localhost:5000/docs) | Interaktywna dokumentacja REST API |
+| Usługa | Adres URL | Kontener | Opis |
+| :--- | :--- | :--- | :--- |
+| **Panel Administratora (Frontend)** | [http://localhost:3000](http://localhost:3000) | `pki-admin-frontend` | Zarządzanie Root CA, wystawianie certyfikatów, rejestr CRL |
+| **Backend Administratora (API)** | [http://localhost:5000/docs](http://localhost:5000/docs) | `pki-admin-backend` | REST API Root CA z dostępem do klucza prywatnego CA |
+| **Portal Klienta (Frontend)** | [http://localhost:3001](http://localhost:3001) | `pki-client-frontend` | Portal samoobsługowy dla węzłów brzegowych / użytkowników |
+| **Backend Klienta (API)** | [http://localhost:5001/docs](http://localhost:5001/docs) | `pki-client-backend` | Publiczne API weryfikacji i pobierania poświadczeń (bez klucza CA!) |
+| **Baza Danych PostgreSQL** | `localhost:5433` (wewn. `5432`) | `pki-db` | Relacyjny magazyn węzłów i certyfikatów |
 
 ---
 

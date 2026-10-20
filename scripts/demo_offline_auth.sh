@@ -8,7 +8,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-PKI_DATA="$REPO_ROOT/backend/pki_data"
+PKI_DATA="$REPO_ROOT/admin/backend/pki_data"
 
 CERT="${1:-}"
 KEY="${2:-}"

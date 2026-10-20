@@ -1,6 +1,9 @@
 version: '3.8'
 
 services:
+  # ============================================================================
+  # BAZA DANYCH
+  # ============================================================================
   db:
     image: postgres:15-alpine
     container_name: pki-db
@@ -13,13 +16,16 @@ services:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./admin/backend/init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - pki-network
 
-  backend:
-    build: ./backend
-    container_name: pki-backend
+  # ============================================================================
+  # PANEL ADMINISTRATORA (GŁÓWNY URZĄD CERTYFIKACJI - ROOT CA)
+  # ============================================================================
+  admin-backend:
+    build: ./admin/backend
+    container_name: pki-admin-backend
     restart: always
     ports:
       - "5000:5000"
@@ -31,14 +37,44 @@ services:
     networks:
       - pki-network
 
-  frontend:
-    build: ./frontend
-    container_name: pki-frontend
+  admin-frontend:
+    build: ./admin/frontend
+    container_name: pki-admin-frontend
     restart: always
     ports:
       - "3000:3000"
     depends_on:
-      - backend
+      - admin-backend
+    networks:
+      - pki-network
+
+  # ============================================================================
+  # PANEL KLIENTA (PORTAL SAMOOBSŁUGOWY WĘZŁÓW / RA - BEZ KLUCZA ROOT CA)
+  # ============================================================================
+  client-backend:
+    build: ./clients/backend
+    container_name: pki-client-backend
+    restart: always
+    ports:
+      - "5001:5001"
+    environment:
+      PORT: 5001
+      DATABASE_URL: postgres://pki_admin:pki_secure_password@db:5432/pki_db
+      ADMIN_BACKEND_URL: http://admin-backend:5000
+    depends_on:
+      - db
+      - admin-backend
+    networks:
+      - pki-network
+
+  client-frontend:
+    build: ./clients/frontend
+    container_name: pki-client-frontend
+    restart: always
+    ports:
+      - "3001:3001"
+    depends_on:
+      - client-backend
     networks:
       - pki-network
 

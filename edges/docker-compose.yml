@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  client_1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: client_1
+    restart: unless-stopped
+    environment:
+      NODE_ID: "client_1"
+      NODE_NAME: "Client 1"
+      LOCAL_IP: "192.168.50.10"
+      PEER_ID: "client_2"
+      PEER_NAME: "Client 2"
+      PEER_IP: "192.168.50.20"
+      PORT: "8000"
+    volumes:
+      - ./static:/app/static:ro
+    networks:
+      isolated_p2p_net:
+        ipv4_address: 192.168.50.10
+
+  client_2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: client_2
+    restart: unless-stopped
+    environment:
+      NODE_ID: "client_2"
+      NODE_NAME: "Client 2"
+      LOCAL_IP: "192.168.50.20"
+      PEER_ID: "client_1"
+      PEER_NAME: "Client 1"
+      PEER_IP: "192.168.50.10"
+      PORT: "8000"
+    volumes:
+      - ./static:/app/static:ro
+    networks:
+      isolated_p2p_net:
+        ipv4_address: 192.168.50.20
+
+  gateway:
+    image: nginx:alpine
+    container_name: clients_gateway
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+      - "8002:8002"
+    volumes:
+      - ./nginx_gateway.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - isolated_p2p_net
+      - gateway_net
+    depends_on:
+      - client_1
+      - client_2
+
+networks:
+  isolated_p2p_net:
+    name: isolated_p2p_net
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.50.0/24
+
+  internet_net:
+    name: internet_net
+    driver: bridge
+
+  gateway_net:
+    name: gateway_net
+    driver: bridge
