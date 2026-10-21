@@ -147,6 +147,7 @@ function App() {
   const [runningTest, setRunningTest] = useState(null);
 
   const [inbox, setInbox] = useState([]);
+  const [recipient, setRecipient] = useState("");
   const [outboundMessage, setOutboundMessage] = useState("");
   const [sendingMsg, setSendingMsg] = useState(false);
   const [msgFeedback, setMsgFeedback] = useState(null);
@@ -171,6 +172,19 @@ function App() {
       ...prev.slice(0, 49)
     ]);
   };
+
+  const destinations = status?.destinations || [];
+  const destinationLabel = (id) => {
+    const d = destinations.find((x) => x.id === id);
+    if (!d) return id || "?";
+    return d.direct ? `${d.name} (direct)` : `${d.name} (via ${d.via_name || d.via})`;
+  };
+
+  useEffect(() => {
+    if (destinations.length > 0 && !destinations.some((d) => d.id === recipient)) {
+      setRecipient(destinations[0].id);
+    }
+  }, [status]);
 
   const fetchStatus = async () => {
     try {
@@ -243,16 +257,18 @@ function App() {
 
   const handleTestP2P = async () => {
     setRunningTest("p2p");
-    addLog(`Testing P2P connection with ${status?.peer_name}...`, "info");
+    addLog(`Testing P2P links with ${(status?.peers || []).map((p) => p.name).join(", ") || "neighbours"}...`, "info");
     try {
       const res = await fetch("/api/p2p/test");
       const data = await res.json();
       setP2pResult(data);
-      if (data.p2p_connected) {
-        addLog(`P2P link active. RTT latency: ${data.latency_ms} ms`, "success");
-      } else {
-        addLog("No P2P connection to partner node", "error");
-      }
+      (data.results || []).forEach((r) => {
+        if (r.p2p_connected) {
+          addLog(`P2P link to ${r.peer_name} active. RTT latency: ${r.latency_ms} ms`, "success");
+        } else {
+          addLog(`No P2P connection to ${r.peer_name}`, "error");
+        }
+      });
     } catch (err) {
       setP2pResult({ error: err.message, p2p_connected: false });
       addLog(`P2P test error: ${err.message}`, "error");
@@ -287,17 +303,18 @@ function App() {
 
     setSendingMsg(true);
     setMsgFeedback(null);
-    addLog(`Sending P2P message to ${status?.peer_name}...`, "info");
+    addLog(`Sending P2P message to ${destinationLabel(recipient)}...`, "info");
     try {
       const res = await fetch("/api/p2p/send-message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: outboundMessage.trim() })
+        body: JSON.stringify({ message: outboundMessage.trim(), to: recipient })
       });
       const data = await res.json();
       if (res.ok) {
-        addLog(`Message delivered to ${status?.peer_name} (ID: ${data.delivery_confirmation?.inbox_id})`, "success");
-        setMsgFeedback({ success: true, text: `Message successfully delivered to ${status?.peer_name}.` });
+        const route = (data.route || []).join(" → ");
+        addLog(`Message delivered to ${recipient} (ID: ${data.delivery_confirmation?.inbox_id}, route: ${route})`, "success");
+        setMsgFeedback({ success: true, text: `Message successfully delivered to ${recipient}. Route: ${route}` });
         setOutboundMessage("");
       } else {
         addLog(`Message rejected: ${data.detail || "Error"}`, "error");
@@ -317,10 +334,11 @@ function App() {
 
     setTransferringFile(true);
     setFileFeedback(null);
-    addLog(`Sending file '${fileToUpload.name}' to ${status?.peer_name}...`, "info");
+    addLog(`Sending file '${fileToUpload.name}' to ${destinationLabel(recipient)}...`, "info");
 
     const formData = new FormData();
     formData.append("file", fileToUpload);
+    formData.append("to", recipient);
 
     try {
       const res = await fetch("/api/p2p/send-file", {
@@ -329,10 +347,11 @@ function App() {
       });
       const data = await res.json();
       if (res.ok) {
-        addLog(`File '${data.filename}' transferred successfully.`, "success");
+        const route = (data.route || []).join(" → ");
+        addLog(`File '${data.filename}' transferred successfully to ${data.recipient} (route: ${route}).`, "success");
         setFileFeedback({
           success: true,
-          text: `File '${data.filename}' (${formatFileSize(data.size_bytes)}) transferred successfully.`
+          text: `File '${data.filename}' (${formatFileSize(data.size_bytes)}) transferred to ${data.recipient}. Route: ${route}`
         });
         setFileToUpload(null);
         if (fileInputRef.current) fileInputRef.current.value = "";
@@ -405,7 +424,14 @@ function App() {
   }
 
   const isOnline = Boolean(status?.has_internet ?? status?.has_default_gateway);
-  const isClient1 = (status?.node_id === "client_1" || status?.client_id === "client_1");
+  const NODE_COLORS = {
+    client_1: { icon: "bg-indigo-50 border-indigo-200 text-indigo-600", badge: "bg-indigo-50 text-indigo-700 border-indigo-200" },
+    client_2: { icon: "bg-emerald-50 border-emerald-200 text-emerald-700", badge: "bg-emerald-50 text-emerald-800 border-emerald-200" },
+    client_3: { icon: "bg-amber-50 border-amber-200 text-amber-700", badge: "bg-amber-50 text-amber-800 border-amber-200" }
+  };
+  const nodeColor = NODE_COLORS[status?.node_id || status?.client_id] || {
+    icon: "bg-slate-50 border-slate-200 text-slate-600", badge: "bg-slate-50 text-slate-700 border-slate-200"
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 antialiased font-sans">
@@ -413,7 +439,7 @@ function App() {
         <div className="max-w-7xl mx-auto px-6 py-4 flex flex-col sm:flex-row justify-between items-center gap-4">
           <div className="flex items-center gap-3">
             <div className={`p-2 rounded-lg border ${
-              isClient1 ? "bg-indigo-50 border-indigo-200 text-indigo-600" : "bg-emerald-50 border-emerald-200 text-emerald-700"
+              nodeColor.icon
             }`}>
               <RadioIcon className="w-5 h-5" />
             </div>
@@ -423,15 +449,13 @@ function App() {
                   {status?.node_name || status?.client_name || "Client"}
                 </h1>
                 <span className={`inline-flex px-2 py-0.5 rounded text-[11px] font-semibold border ${
-                  isClient1 
-                    ? "bg-indigo-50 text-indigo-700 border-indigo-200" 
-                    : "bg-emerald-50 text-emerald-800 border-emerald-200"
+                  nodeColor.badge
                 }`}>
                   {status?.node_id || status?.client_id}
                 </span>
               </div>
               <p className="text-xs text-slate-500">
-                P2P Address: <code className="text-slate-700 font-mono font-medium">{status?.local_ip}:{status?.local_port}</code>
+                P2P Address: <code className="text-slate-700 font-mono font-medium">{(status?.local_ips || []).map((ip) => `${ip}:${status?.local_port}`).join(", ")}</code>
               </p>
             </div>
           </div>
@@ -482,11 +506,18 @@ function App() {
               <RadioIcon className="w-5 h-5" />
             </div>
             <div>
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Partner Node</p>
-              <h3 className="text-base font-bold text-slate-900 mt-0.5">
-                {status?.peer_name}
-              </h3>
-              <p className="text-[11px] text-slate-500 font-mono">{status?.peer_ip}:8000</p>
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Radio Neighbours ({(status?.peers || []).length})</p>
+              {(status?.peers || []).map((p) => (
+                <div key={p.id} className="mt-0.5">
+                  <span className="text-sm font-bold text-slate-900">{p.name}</span>{" "}
+                  <span className="text-[11px] text-slate-500 font-mono">{p.ip}:{status?.local_port}</span>
+                </div>
+              ))}
+              {destinations.filter((d) => !d.direct).map((d) => (
+                <p key={d.id} className="text-[11px] text-slate-500">
+                  {d.name} via <span className="font-mono">{d.via}</span>
+                </p>
+              ))}
             </div>
           </div>
 
@@ -549,7 +580,7 @@ function App() {
 
           <div className="text-xs text-slate-500 font-mono flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
-            Link control: <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">./client.sh internet on/off</code>
+            Link control: <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">./client.sh internet on/off</code> <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">./client.sh link up/down</code>
           </div>
         </div>
 
@@ -626,7 +657,7 @@ function App() {
                       {p2pResult.p2p_connected ? (
                         <>
                           <CheckCircleIcon className="w-4 h-4 text-blue-600" />
-                          P2P Link Active
+                          P2P Links Active ({p2pResult.peers_connected}/{p2pResult.peers_total})
                         </>
                       ) : (
                         <>
@@ -635,17 +666,21 @@ function App() {
                         </>
                       )}
                     </div>
-                    {p2pResult.p2p_connected ? (
-                      <div className="space-y-1 font-mono text-[11px]">
-                        <div>Partner: <b>{p2pResult.target_peer}</b></div>
-                        <div>RTT Latency: <b>{p2pResult.latency_ms} ms</b></div>
-                        <div>Status: Uptime={p2pResult.peer_info?.uptime_seconds}s</div>
-                      </div>
-                    ) : (
-                      <div className="text-[11px]">
-                        {p2pResult.error}
-                      </div>
+                    {p2pResult.error && !p2pResult.results && (
+                      <div className="text-[11px]">{p2pResult.error}</div>
                     )}
+                    <div className="space-y-2 font-mono text-[11px]">
+                      {(p2pResult.results || []).map((r) => (
+                        <div key={r.peer_id}>
+                          <div>{r.p2p_connected ? "✓" : "✗"} <b>{r.peer_name}</b> ({r.target_address})</div>
+                          {r.p2p_connected ? (
+                            <div className="pl-3">RTT: <b>{r.latency_ms} ms</b>, Uptime={r.peer_info?.uptime_seconds}s</div>
+                          ) : (
+                            <div className="pl-3 text-rose-700 break-all">{r.error}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
@@ -692,9 +727,11 @@ function App() {
                         <div>WAN Target: <b>{internetTestResult.target}</b></div>
                         <div>RTT Latency: <b>{internetTestResult.latency_ms} ms</b></div>
                         <div>Public IP: <b>{internetTestResult.public_ip || "OK"}</b></div>
-                        {internetTestResult.peer_accessible_via_internet && (
-                          <div className="text-emerald-700">Partner: OK ({internetTestResult.peer_internet_latency_ms} ms)</div>
-                        )}
+                        {internetTestResult.peer_internet_accessible && (internetTestResult.peers_internet || [])
+                          .filter((p) => p.accessible)
+                          .map((p) => (
+                            <div key={p.id} className="text-emerald-700">Node via Internet: {p.name} OK ({p.latency_ms} ms)</div>
+                          ))}
                       </div>
                     ) : (
                       <div className="text-[11px]">
@@ -726,13 +763,18 @@ function App() {
               
               <form onSubmit={handleSendMessage} className="space-y-4">
                 <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">Recipient (Partner node)</label>
-                  <input 
-                    type="text" 
-                    value={`${status?.peer_name} (${status?.peer_ip}:8000)`}
-                    disabled
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-medium text-slate-600 cursor-not-allowed"
-                  />
+                  <label className="block text-xs font-medium text-slate-500 mb-1">Recipient</label>
+                  <select
+                    value={recipient}
+                    onChange={(e) => setRecipient(e.target.value)}
+                    className="w-full bg-white border border-slate-200 focus:border-indigo-500 rounded-lg px-3 py-2 text-xs font-medium text-slate-700 outline-none"
+                    required
+                  >
+                    {destinations.length === 0 && <option value="">No known destinations</option>}
+                    {destinations.map((d) => (
+                      <option key={d.id} value={d.id}>{destinationLabel(d.id)}</option>
+                    ))}
+                  </select>
                 </div>
 
                 <div>
@@ -759,7 +801,7 @@ function App() {
 
                 <button 
                   type="submit" 
-                  disabled={sendingMsg || !outboundMessage.trim()}
+                  disabled={sendingMsg || !outboundMessage.trim() || !recipient}
                   className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 px-4 rounded-lg text-xs shadow-xs transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
                 >
                   <SendIcon className="w-3.5 h-3.5" />
@@ -772,7 +814,7 @@ function App() {
               <div className="p-5 border-b border-slate-100 flex items-center justify-between">
                 <div>
                   <h3 className="text-sm font-semibold text-slate-900">Received Messages Inbox</h3>
-                  <p className="text-xs text-slate-500 mt-0.5">All messages received via direct P2P link</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Messages delivered to this node (directly or forwarded by neighbours)</p>
                 </div>
                 <span className="text-xs font-medium text-slate-600 bg-slate-100 px-2.5 py-1 rounded-full border border-slate-200">
                   {inbox.length} messages
@@ -790,15 +832,19 @@ function App() {
                       <tr className="bg-slate-50/70 border-b border-slate-200 text-slate-500 text-xs font-semibold uppercase tracking-wider">
                         <th className="px-6 py-3.5">ID</th>
                         <th className="px-6 py-3.5">Sender</th>
+                        <th className="px-6 py-3.5">Route</th>
                         <th className="px-6 py-3.5">Content</th>
                         <th className="px-6 py-3.5 text-right">Received (UTC)</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-xs">
                       {inbox.map((msg) => (
-                        <tr key={msg.id} className="hover:bg-slate-50/50 transition-colors">
+                        <tr key={msg.msg_id || msg.id} className="hover:bg-slate-50/50 transition-colors">
                           <td className="px-6 py-4 font-mono text-slate-400">#{msg.id}</td>
-                          <td className="px-6 py-4 font-semibold text-slate-900">{msg.sender_name}</td>
+                          <td className="px-6 py-4 font-semibold text-slate-900">{msg.origin_name || msg.sender_name}</td>
+                          <td className="px-6 py-4 font-mono text-[11px] text-slate-500">
+                            {(msg.route || [msg.sender_id]).join(" → ")}
+                          </td>
                           <td className="px-6 py-4 text-slate-700">{msg.message}</td>
                           <td className="px-6 py-4 text-right font-mono text-slate-500">
                             {msg.received_at?.split("T")[1]?.slice(0, 8) || msg.received_at}
@@ -824,12 +870,17 @@ function App() {
               <form onSubmit={handleSendFile} className="space-y-4">
                 <div>
                   <label className="block text-xs font-medium text-slate-500 mb-1">Target Node</label>
-                  <input 
-                    type="text" 
-                    value={`${status?.peer_name} (${status?.peer_ip}:8000)`}
-                    disabled
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs font-medium text-slate-600 cursor-not-allowed"
-                  />
+                  <select
+                    value={recipient}
+                    onChange={(e) => setRecipient(e.target.value)}
+                    className="w-full bg-white border border-slate-200 focus:border-indigo-500 rounded-lg px-3 py-2 text-xs font-medium text-slate-700 outline-none"
+                    required
+                  >
+                    {destinations.length === 0 && <option value="">No known destinations</option>}
+                    {destinations.map((d) => (
+                      <option key={d.id} value={d.id}>{destinationLabel(d.id)}</option>
+                    ))}
+                  </select>
                 </div>
 
                 <div>
@@ -855,7 +906,7 @@ function App() {
 
                 <button 
                   type="submit" 
-                  disabled={transferringFile || !fileToUpload}
+                  disabled={transferringFile || !fileToUpload || !recipient}
                   className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 px-4 rounded-lg text-xs shadow-xs transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
                 >
                   <UploadIcon className="w-3.5 h-3.5" />

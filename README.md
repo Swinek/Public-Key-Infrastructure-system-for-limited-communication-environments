@@ -19,8 +19,9 @@ Niniejszy projekt stanowi implementację i demonstrację systemu PKI. Umożliwia
 
 ```
 projekt_inzynierski/
-├── docker-compose.yml           # Orkiestracja kontenerów (PostgreSQL, Admin CA, Client Portal)
+├── docker-compose.yml           # Centrum: PostgreSQL, Admin CA, Client Portal (+ sieć internet_net)
 ├── client.sh                    # Skrypt pomocniczy do węzłów brzegowych (deleguje do edges/client.sh)
+├── pytest.ini, requirements-dev.txt, tests/   # Testy (pytest)
 ├── README.md                    # Główna dokumentacja projektu
 │
 ├── admin/                       # Panel Administratora Root CA
@@ -31,7 +32,7 @@ projekt_inzynierski/
 │   │   ├── database.py          # Pula połączeń PostgreSQL (asyncpg)
 │   │   ├── schemas.py           # Modele walidacyjne Pydantic
 │   │   ├── init.sql             # Schemat bazy danych (tabele users, certificates)
-│   │   ├── pki_data/            # Klucze Root CA (ca_private_key.pem, ca_certificate.pem, crl.pem)
+│   │   ├── pki_data/            # Dane Root CA (klucz, certyfikat, CRL) – montowane do kontenera, poza obrazem
 │   │   ├── routers/             # Endpointy: /api/users, /api/certificates, /api/health
 │   │   └── pki/                 # Silnik CA (ca.py - RSA 4096, X.509, generowanie CRL)
 │   └── frontend/                # Panel Administratora Root CA (port 3000)
@@ -52,12 +53,13 @@ projekt_inzynierski/
 │       └── src/App.jsx          # Wybór tożsamości węzła, pobieranie certyfikatu PEM, Root CA i CRL
 │
 ├── edges/                       # Węzły brzegowe / statki (symulacja sieci P2P w trybie offline)
-│   ├── docker-compose.yml       # Orkiestracja węzłów (client_1, client_2, gateway)
-│   ├── client.sh                # Skrypt sterowania węzłami i symulacją łącza Internet/P2P
+│   ├── docker-compose.yml       # Orkiestracja węzłów (client_1..3, gateway, sieci p2p_12/p2p_23)
+│   ├── client.sh                # Skrypt sterowania węzłami, łączem WAN i łączami radiowymi
 │   ├── client_node.py           # Aplikacja węzła brzegowego (FastAPI)
+│   ├── routing.py               # Wybór następnego skoku (PEERS / ROUTES)
 │   ├── routers/                 # Endpointy P2P, diagnostyki sieci i testu łączności
 │   ├── static/                  # Panel graficzny węzła brzegowego
-│   └── nginx_gateway.conf       # Konfiguracja reverse proxy dla portów 8001 i 8002
+│   └── nginx_gateway.conf       # Konfiguracja reverse proxy dla portów 8001–8003
 │
 └── scripts/                     # Skrypty demonstracyjne offline auth (OpenSSL / Python)
 ```
@@ -71,7 +73,8 @@ System posiada wbudowany silnik kryptograficzny oparty o bibliotekę `cryptograp
 ### 1. Główny Urząd Certyfikacji (Root CA)
 * Podczas uruchamiania backendu funkcja `initialize_ca()` automatycznie sprawdza obecność certyfikatu i klucza prywatnego Root CA.
 * Jeśli nie istnieją, tworzy parę kluczy **RSA 4096-bit** oraz samopodpisany certyfikat główny **X.509** (`Offline PKI Root CA`) z okresem ważności 10 lat i rozszerzeniem `BasicConstraints(ca=True)`.
-* Pliki CA zapisywane są w katalogu `pki_data/` (klucz prywatny CA jest chroniony i wykluczony w `.gitignore`).
+* Pliki CA zapisywane są w katalogu wskazanym przez `PKI_DIR`. W Dockerze jest to `/app/pki_data`, montowany z hosta (`admin/backend/pki_data/`), dzięki czemu klucz nie trafia do obrazu (`.dockerignore`) ani do repozytorium (`.gitignore`) i przetrwa przebudowę. Katalog ma uprawnienia 0700, klucz prywatny 0600.
+* **Uwaga:** usunięcie `pki_data/` oznacza wygenerowanie **nowego** Root CA przy następnym starcie (backend zapisze ostrzeżenie w logach) – wcześniej wydane certyfikaty i fingerprinty zapisane w węzłach przestaną pasować.
 
 ### 2. Certyfikaty Użytkowników / Węzłów
 * Endpoint `POST /api/certificates` uruchamia procedurę `issue_user_certificate(username, email)`.
@@ -96,9 +99,16 @@ System posiada wbudowany silnik kryptograficzny oparty o bibliotekę `cryptograp
 ---
 
 ## Uruchomienie
+
 ```bash
-docker compose up --build -d
+docker compose up --build -d        # CA, portal klienta, baza
+./client.sh up                      # węzły brzegowe (domyślnie OFFLINE)
+./client.sh internet on 3           # węzeł 3 ma łącze WAN – widzi portal pod http://pki-client-backend:5001
 ```
+
+Centrum (`docker-compose.yml`) i węzły (`edges/docker-compose.yml`) to dwa osobne systemy. Jedynym stykiem
+między nimi jest sieć `internet_net`: tworzy ją `docker compose up` centrum, portal klienta jest do niej
+podłączony na stałe, a węzły – tylko po `./client.sh internet on`.
 
 
 ### Dostęp do usług (Rozdzielona Architektura)
@@ -110,6 +120,54 @@ docker compose up --build -d
 | **Portal Klienta (Frontend)** | [http://localhost:3001](http://localhost:3001) | `pki-client-frontend` | Portal samoobsługowy dla węzłów brzegowych / użytkowników |
 | **Backend Klienta (API)** | [http://localhost:5001/docs](http://localhost:5001/docs) | `pki-client-backend` | Publiczne API weryfikacji i pobierania poświadczeń (bez klucza CA!) |
 | **Baza Danych PostgreSQL** | `localhost:5433` (wewn. `5432`) | `pki-db` | Relacyjny magazyn węzłów i certyfikatów |
+| **Węzły brzegowe** | [http://localhost:8001](http://localhost:8001), `:8002`, `:8003` (Swagger: `/docs`) | `client_1..3` | Panel węzła przez gateway nginx |
+
+---
+
+## Węzły brzegowe (`edges/`)
+
+Węzły („okręty”) komunikują się przez symulowane, wolne łącze radiowe P2P. Topologia jest fizyczna, w postaci łańcucha:
+
+    client_1 ──p2p_12── client_2 ──p2p_23── client_3
+
+Każde łącze radiowe to osobna sieć Docker `internal` (bez internetu): `p2p_12` (192.168.12.0/24) i
+`p2p_23` (192.168.23.0/24). Węzły 1 i 3 nie mają bezpośredniego łącza, więc ruch między nimi przekazuje
+węzeł 2 (synchronicznie; store-and-forward z kolejką planowany jest w Etapie 3). Gateway nginx łączy się z
+każdym węzłem osobną siecią `mgmt_N` i odrzuca ruch od węzłów, więc nie tworzy mostu między nimi.
+
+Konfiguracja węzła (zmienne środowiskowe):
+- `PEERS="id:Nazwa:ip,..."` – bezpośredni sąsiedzi radiowi,
+- `ROUTES="cel[:Nazwa]=następny_skok,..."` – trasy statyczne do węzłów, które nie są sąsiadami,
+- `DATA_DIR` – trwałe dane węzła (wolumen `client_N_data`): `inbox.json`, `received_files/`, `pki/` (Etap 2),
+- `PORTAL_URL` – adres portalu klienta w sieci `internet_net` (Etap 3).
+
+Wiadomości mają `msg_id`, nadawcę pierwotnego i listę `hops`. Węzeł odrzuca wiadomość, która już przez niego
+przeszła (pętla), a pliki są sprawdzane sumą SHA-256 na każdym skoku.
+
+```bash
+./client.sh status | links                # status węzłów i łączy radiowych
+./client.sh internet on|off [1|2|3|all]   # łącze WAN (sieć internet_net, dostęp do portalu PKI)
+./client.sh link down|up 1 2              # zerwanie / przywrócenie łącza radiowego 1↔2
+./client.sh msg 1 3 "tekst"               # wiadomość 1 → 3 (przez węzeł 2)
+./client.sh send-file 1 3 plik.txt        # plik 1 → 3
+./client.sh inbox 3 | files 3             # skrzynka / odebrane pliki węzła 3
+./client.sh p2p-test [N]                  # test łączy do wszystkich sąsiadów
+```
+
+---
+
+## Testy
+
+Testy uruchamiane są w kontenerze (nic nie trzeba instalować lokalnie):
+
+```bash
+docker run --rm -v "$PWD":/repo:ro -w /repo python:3.11-slim \
+  sh -c "pip install -q -r requirements-dev.txt && python -m pytest -p no:cacheprovider"
+```
+
+Testy integracyjne (`-m docker`, wymagają uruchomionego centrum) – to samo z `--network host` i
+`python -m pytest -p no:cacheprovider -m docker`. Testy CA generują Root CA w katalogu tymczasowym
+(`PKI_DIR`) – nigdy nie dotykają `admin/backend/pki_data`.
 
 ---
 
@@ -151,18 +209,35 @@ Aplikacja została zaprojektowana z myślą o czytelnej demonstracji działania 
 
 ## Demonstracja Uwierzytelniania Offline (Radio / Maszyna Wirtualna)
 
-W katalogu `scripts/` przygotowano gotowe narzędzia demonstracyjne symulujące handshake i autoryzację węzłów w odciętym środowisku (fale radiowe / brak Internetu):
+Skrypty w `scripts/` pokazują, że węzeł polowy weryfikuje tożsamość sąsiada **bez dostępu do CA**,
+wyłącznie na podstawie lokalnego certyfikatu Root CA i ostatniej pobranej CRL. Skrypty niczego nie
+podpisują kluczem CA – certyfikaty wystawia CA przez API (klucz Root CA nie opuszcza `admin/backend`).
 
-1. **Weryfikacja OpenSSL (uniwersalna, bez zależności):**
-   ```bash
-   bash scripts/demo_offline_auth.sh
-   # Lub z własnymi pobranymi plikami:
-   bash scripts/demo_offline_auth.sh node_cert.pem node_private.key ca_certificate.pem crl.pem
-   ```
+Wymagane działające centrum (`docker compose up --build -d`). Przebieg:
 
-2. **Weryfikacja Python (z biblioteką cryptography):**
-   ```bash
-   python3 scripts/demo_offline_auth.py --cert node_cert.pem --key node_private.key --ca ca_certificate.pem --crl crl.pem
-   ```
+1. **Faza online** – rejestracja węzła `radio_node_alfa_<ts>` i wydanie mu certyfikatu; wydanie
+   certyfikatu `radio_node_mallory_<ts>` i jego odwołanie (`keyCompromise`); pobranie certyfikatu
+   Root CA i aktualnej CRL z portalu klienta (`/api/certificates/ca`, `/api/certificates/crl`).
+2. **Faza offline (od tej chwili bez sieci)** – weryfikacja podpisu i świeżości CRL (`nextUpdate`),
+   weryfikacja łańcucha i statusu certyfikatu „alfa” (OK), próba uwierzytelnienia „mallory”
+   (oczekiwane odrzucenie: certyfikat odwołany), wyzwanie–podpis–weryfikacja dla „alfa”.
+
+```bash
+# OpenSSL (wymaga curl, python3, openssl):
+bash scripts/demo_offline_auth.sh                 # pełny przebieg
+bash scripts/demo_offline_auth.sh --no-revoked    # bez odwołanego certyfikatu „mallory”
+bash scripts/demo_offline_auth.sh node_cert.pem node_private.key [ca_certificate.pem] [crl.pem]
+
+# Python (wymaga cryptography >= 43):
+python3 scripts/demo_offline_auth.py [--no-revoked]
+python3 scripts/demo_offline_auth.py --cert node_cert.pem --key node_private.key --ca ca_certificate.pem --crl crl.pem
+```
+
+Adresy usług ustawia się zmiennymi `ADMIN_URL` (domyślnie `http://localhost:5000`) i `PORTAL_URL`
+(domyślnie `http://localhost:5001`), a w skrypcie Python także opcjami `--admin-url` / `--portal-url`.
+Każde uruchomienie tworzy w bazie nowych użytkowników demo; nie są oni usuwani, bo usunięcie
+kasuje też odwołane certyfikaty z CRL.
+
+> Klucz prywatny węzła w demo generuje serwer CA; docelowo węzeł wygeneruje go sam i wyśle CSR (Etap 3).
 
 

@@ -7,3 +7,9 @@ node_modules/
 dist/
 NOTATKI_ARCHITEKTURA.md
 docs/
+.pytest_cache/
+.venv/
+.coverage
+htmlcov/
+received_files/
+edges/data/

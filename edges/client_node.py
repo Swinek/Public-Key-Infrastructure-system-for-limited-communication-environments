@@ -15,9 +15,15 @@ from fastapi.staticfiles import StaticFiles
 import config
 from routers import network, p2p
 
+_peers_desc = ", ".join(f"{p['name']} ({p['ip']}:{config.PORT})" for p in config.PEERS) or "none"
+_routes_desc = ", ".join(f"{dest} via {hop}" for dest, hop in config.ROUTES.items()) or "none"
+
 app = FastAPI(
     title=f"Node API: {config.NODE_NAME}",
-    description=f"Node {config.NODE_NAME} ({config.NODE_ID}). P2P: {config.LOCAL_IP}:{config.PORT}. Peer: {config.PEER_NAME} ({config.PEER_IP}:{config.PORT}).",
+    description=(
+        f"Node {config.NODE_NAME} ({config.NODE_ID}). P2P: {', '.join(config.LOCAL_IPS)} (port {config.PORT}). "
+        f"Neighbours: {_peers_desc}. Routes: {_routes_desc}."
+    ),
     version="1.0.0"
 )
 
@@ -34,8 +40,9 @@ def root_page():
         "service": "Node API",
         "node_id": config.NODE_ID,
         "node_name": config.NODE_NAME,
-        "local_ip": f"{config.LOCAL_IP}:{config.PORT}",
-        "peer": f"{config.PEER_NAME} ({config.PEER_IP}:{config.PORT})",
+        "local_ips": [f"{ip}:{config.PORT}" for ip in config.LOCAL_IPS],
+        "peers": [f"{p['name']} ({p['ip']}:{config.PORT})" for p in config.PEERS],
+        "routes": config.ROUTES,
         "documentation": "/docs"
     }
 

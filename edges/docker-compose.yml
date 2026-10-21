@@ -1,45 +1,88 @@
-version: '3.8'
+# Węzły brzegowe („okręty”) – fizyczna topologia łącza radiowego P2P: client_1 <-> client_2 <-> client_3.
+#
+# Sieci P2P (internal, bez internetu) modelują zasięg radiowy – jedna sieć = jedno łącze między dwoma węzłami:
+#   p2p_12 (192.168.12.0/24): client_1 .10, client_2 .20
+#   p2p_23 (192.168.23.0/24): client_2 .20, client_3 .30
+# Nie ma wspólnej sieci client_1 <-> client_3: wiadomości 1 -> 3 przechodzą przez client_2 (ROUTES).
+# Schemat adresów: węzeł N w sieci p2p_ab ma IP 192.168.ab.N0 (client.sh link up odtwarza je z tego pliku).
+#
+# mgmt_N – osobna sieć zarządzania na węzeł (tylko gateway + client_N), żeby UI działało także po
+# `client.sh link down`. Gateway (nginx) odrzuca ruch z sieci mgmt/p2p, więc nie jest mostem między węzłami.
+#
+# internet_net – sieć zewnętrzna (tworzy ją client.sh, deklaruje też centrum); węzły są do niej
+# podłączane i odłączane przez `client.sh internet on|off` (alias inet-<id>).
+
+x-node-common: &node-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
 
 services:
   client_1:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *node-common
     container_name: client_1
-    restart: unless-stopped
     environment:
       NODE_ID: "client_1"
       NODE_NAME: "Client 1"
-      LOCAL_IP: "192.168.50.10"
-      PEER_ID: "client_2"
-      PEER_NAME: "Client 2"
-      PEER_IP: "192.168.50.20"
+      LOCAL_IPS: "192.168.12.10"
+      PEERS: "client_2:Client 2:192.168.12.20"
+      ROUTES: "client_3:Client 3=client_2"
       PORT: "8000"
+      DATA_DIR: "/app/data"
+      PORTAL_URL: "http://pki-client-backend:5001"
     volumes:
       - ./static:/app/static:ro
+      - client_1_data:/app/data
     networks:
-      isolated_p2p_net:
-        ipv4_address: 192.168.50.10
+      p2p_12:
+        ipv4_address: 192.168.12.10
+      mgmt_1:
+        ipv4_address: 192.168.201.10
 
   client_2:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    <<: *node-common
     container_name: client_2
-    restart: unless-stopped
     environment:
       NODE_ID: "client_2"
       NODE_NAME: "Client 2"
-      LOCAL_IP: "192.168.50.20"
-      PEER_ID: "client_1"
-      PEER_NAME: "Client 1"
-      PEER_IP: "192.168.50.10"
+      LOCAL_IPS: "192.168.12.20,192.168.23.20"
+      PEERS: "client_1:Client 1:192.168.12.10,client_3:Client 3:192.168.23.30"
+      ROUTES: ""
       PORT: "8000"
+      DATA_DIR: "/app/data"
+      PORTAL_URL: "http://pki-client-backend:5001"
     volumes:
       - ./static:/app/static:ro
+      - client_2_data:/app/data
     networks:
-      isolated_p2p_net:
-        ipv4_address: 192.168.50.20
+      p2p_12:
+        ipv4_address: 192.168.12.20
+      p2p_23:
+        ipv4_address: 192.168.23.20
+      mgmt_2:
+        ipv4_address: 192.168.202.10
+
+  client_3:
+    <<: *node-common
+    container_name: client_3
+    environment:
+      NODE_ID: "client_3"
+      NODE_NAME: "Client 3"
+      LOCAL_IPS: "192.168.23.30"
+      PEERS: "client_2:Client 2:192.168.23.20"
+      ROUTES: "client_1:Client 1=client_2"
+      PORT: "8000"
+      DATA_DIR: "/app/data"
+      PORTAL_URL: "http://pki-client-backend:5001"
+    volumes:
+      - ./static:/app/static:ro
+      - client_3_data:/app/data
+    networks:
+      p2p_23:
+        ipv4_address: 192.168.23.30
+      mgmt_3:
+        ipv4_address: 192.168.203.10
 
   gateway:
     image: nginx:alpine
@@ -48,27 +91,71 @@ services:
     ports:
       - "8001:8001"
       - "8002:8002"
+      - "8003:8003"
     volumes:
       - ./nginx_gateway.conf:/etc/nginx/nginx.conf:ro
     networks:
-      - isolated_p2p_net
-      - gateway_net
+      mgmt_1:
+        ipv4_address: 192.168.201.254
+      mgmt_2:
+        ipv4_address: 192.168.202.254
+      mgmt_3:
+        ipv4_address: 192.168.203.254
+      gateway_net: {}
     depends_on:
       - client_1
       - client_2
+      - client_3
+
+volumes:
+  client_1_data:
+  client_2_data:
+  client_3_data:
 
 networks:
-  isolated_p2p_net:
-    name: isolated_p2p_net
+  p2p_12:
+    name: p2p_12
     driver: bridge
     internal: true
     ipam:
       config:
-        - subnet: 192.168.50.0/24
+        - subnet: 192.168.12.0/24
+
+  p2p_23:
+    name: p2p_23
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.23.0/24
+
+  mgmt_1:
+    name: mgmt_1
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.201.0/24
+
+  mgmt_2:
+    name: mgmt_2
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.202.0/24
+
+  mgmt_3:
+    name: mgmt_3
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.203.0/24
 
   internet_net:
     name: internet_net
-    driver: bridge
+    external: true
 
   gateway_net:
     name: gateway_net

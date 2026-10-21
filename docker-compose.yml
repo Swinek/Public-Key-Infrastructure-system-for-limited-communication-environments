@@ -32,6 +32,10 @@ services:
     environment:
       PORT: 5000
       DATABASE_URL: postgres://pki_admin:pki_secure_password@db:5432/pki_db
+      PKI_DIR: /app/pki_data
+    volumes:
+      # Root CA (klucz + certyfikat) i CRL poza obrazem - przetrwają przebudowę
+      - ./admin/backend/pki_data:/app/pki_data
     depends_on:
       - db
     networks:
@@ -66,6 +70,7 @@ services:
       - admin-backend
     networks:
       - pki-network
+      - internet_net
 
   client-frontend:
     build: ./clients/frontend
@@ -81,6 +86,10 @@ services:
 networks:
   pki-network:
     driver: bridge
+  # Jedyny styk centrum z węzłami edges/ (symulowane "łącze internetowe").
+  # Tworzy ją `docker compose up`; edges/docker-compose.yml korzysta z niej jako external.
+  internet_net:
+    name: internet_net
 
 volumes:
   pgdata:

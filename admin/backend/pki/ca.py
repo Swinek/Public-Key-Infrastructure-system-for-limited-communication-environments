@@ -1,3 +1,5 @@
+import logging
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -7,11 +9,32 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 
-PKI_DIR = Path(__file__).resolve().parent.parent / "pki_data"
+logger = logging.getLogger("pki_backend")
+
+# Katalog danych PKI; w kontenerze montowany jako bind mount (zob. docker-compose.yml),
+# dzięki czemu Root CA przetrwa przebudowę obrazu i nie trafia do warstw obrazu.
+PKI_DIR = Path(os.getenv("PKI_DIR", Path(__file__).resolve().parent.parent / "pki_data"))
 CA_KEY_PATH = PKI_DIR / "ca_private_key.pem"
 CA_CERT_PATH = PKI_DIR / "ca_certificate.pem"
 CRL_PEM_PATH = PKI_DIR / "crl.pem"
 CRL_DER_PATH = PKI_DIR / "crl.der"
+
+
+def _ensure_pki_dir():
+    """Tworzy katalog danych PKI (tylko dla właściciela)."""
+    PKI_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.chmod(PKI_DIR, 0o700)
+    except PermissionError:
+        logger.warning("Nie można ustawić uprawnień 0700 dla %s", PKI_DIR)
+
+
+def _write_private_key(path: Path, data: bytes):
+    """Zapisuje klucz prywatny w pliku tworzonym od razu z uprawnieniami 0600."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    os.chmod(path, 0o600)
 
 
 def initialize_ca():
@@ -19,9 +42,14 @@ def initialize_ca():
     Creates the root Certification Authority if it does not exist yet.
     """
 
-    PKI_DIR.mkdir(exist_ok=True)
+    _ensure_pki_dir()
 
     if CA_KEY_PATH.exists() and CA_CERT_PATH.exists():
+        try:
+            os.chmod(CA_KEY_PATH, 0o600)
+        except PermissionError:
+            logger.warning("Nie można ustawić uprawnień 0600 dla %s", CA_KEY_PATH)
+        logger.info("Używam istniejącego Root CA z %s", PKI_DIR)
         return
 
     private_key = rsa.generate_private_key(
@@ -52,7 +80,8 @@ def initialize_ca():
         .sign(private_key, hashes.SHA256())
     )
 
-    CA_KEY_PATH.write_bytes(
+    _write_private_key(
+        CA_KEY_PATH,
         private_key.private_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PrivateFormat.PKCS8,
@@ -62,6 +91,14 @@ def initialize_ca():
 
     CA_CERT_PATH.write_bytes(
         certificate.public_bytes(serialization.Encoding.PEM)
+    )
+
+    fingerprint = certificate.fingerprint(hashes.SHA256()).hex()
+    logger.warning(
+        "UWAGA: wygenerowano NOWY Root CA w %s (SHA-256: %s). "
+        "Wcześniej wydane certyfikaty, CRL i zapisane w węzłach fingerprinty "
+        "starego CA przestają pasować - węzły trzeba ponownie zainicjalizować.",
+        PKI_DIR, fingerprint
     )
 
 def issue_user_certificate(username: str, email: str):
@@ -195,7 +232,7 @@ def generate_crl(revoked_records: list[dict]) -> bytes:
     crl_pem = crl.public_bytes(serialization.Encoding.PEM)
     crl_der = crl.public_bytes(serialization.Encoding.DER)
 
-    PKI_DIR.mkdir(exist_ok=True)
+    _ensure_pki_dir()
     CRL_PEM_PATH.write_bytes(crl_pem)
     CRL_DER_PATH.write_bytes(crl_der)
 

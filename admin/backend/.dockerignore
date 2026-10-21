@@ -11,3 +11,8 @@ package.json
 package-lock.json
 db.js
 index.js
+
+# Dane PKI (klucz Root CA!) nigdy nie trafiają do obrazu – montowane jako wolumen
+pki_data/
+*.pem
+*.key

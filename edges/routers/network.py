@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 import config
+import routing
 import state
 from utils import has_default_gateway, check_socket_connectivity
 
@@ -23,18 +24,18 @@ def get_status():
         "node_name": config.NODE_NAME,
         "client_id": config.NODE_ID,
         "client_name": config.NODE_NAME,
-        "local_ip": config.LOCAL_IP,
+        "local_ips": config.LOCAL_IPS,
         "local_port": config.PORT,
-        "peer_id": config.PEER_ID,
-        "peer_name": config.PEER_NAME,
-        "peer_ip": config.PEER_IP,
+        "peers": config.PEERS,
+        "routes": config.ROUTES,
+        "destinations": routing.known_destinations(),
         "uptime_seconds": uptime,
         "system_time_utc": datetime.now(timezone.utc).isoformat(),
         "network_mode": mode,
         "has_internet": has_gw,
         "has_default_gateway": has_gw,
-        "received_messages_count": len(state.INBOX),
-        "received_files_count": len(list(config.STORAGE_DIR.glob("*")))
+        "received_messages_count": len(state.inbox_snapshot()),
+        "received_files_count": len([f for f in config.STORAGE_DIR.glob("*") if f.is_file() and not f.name.startswith(".")])
     }
 
 
@@ -176,17 +177,20 @@ def test_internet_link(timeout: float = 3.0):
         resp = requests.get(target_host, timeout=timeout, headers={"User-Agent": f"ClientNode/{config.NODE_ID}"})
         latency_ms = round((time.time() - start_t) * 1000, 2)
 
-        peer_container = config.PEER_ID
-        peer_internet_ok = False
-        peer_latency_ms = None
-        try:
-            start_p = time.time()
-            p_resp = requests.get(f"http://{peer_container}:{config.PORT}/api/status", timeout=1.5)
-            if p_resp.status_code == 200:
-                peer_internet_ok = True
-                peer_latency_ms = round((time.time() - start_p) * 1000, 2)
-        except Exception:
-            pass
+        # Other nodes over WAN: client.sh connects nodes to internet_net with alias "inet-<id>",
+        # so this name resolves only via internet_net (never via the P2P radio networks).
+        peers_internet = []
+        for dest in routing.known_destinations():
+            entry = {"id": dest["id"], "name": dest["name"], "accessible": False, "latency_ms": None}
+            try:
+                start_p = time.time()
+                p_resp = requests.get(f"http://inet-{dest['id']}:{config.PORT}/api/status", timeout=1.5)
+                if p_resp.status_code == 200:
+                    entry["accessible"] = True
+                    entry["latency_ms"] = round((time.time() - start_p) * 1000, 2)
+            except Exception:
+                pass
+            peers_internet.append(entry)
 
         public_ip = None
         try:
@@ -205,9 +209,8 @@ def test_internet_link(timeout: float = 3.0):
             "latency_ms": latency_ms,
             "target": "Internet WAN Gateway (Cloudflare 1.1.1.1)",
             "public_ip": public_ip,
-            "peer_partner": config.PEER_NAME,
-            "peer_internet_accessible": peer_internet_ok,
-            "peer_internet_latency_ms": peer_latency_ms,
+            "peer_internet_accessible": any(p["accessible"] for p in peers_internet),
+            "peers_internet": peers_internet,
             "message": f"Internet connection active (RTT: {latency_ms} ms)."
         }
     except Exception as e:
