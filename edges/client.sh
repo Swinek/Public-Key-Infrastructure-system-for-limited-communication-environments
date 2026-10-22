@@ -195,7 +195,12 @@ set_link() {
     if [ "$action" = "down" ]; then
         echo -e "${YELLOW}[-] Radio link $a <-> $b is DOWN.${NC}"
     else
-        echo -e "${GREEN}[+] Radio link $a <-> $b is UP.${NC}"
+        # Link established: each node sends ONE hello on its radio links, the other answers once.
+        for client in "$a" "$b"; do
+            is_container_running "$client" && \
+                docker exec "$client" curl -s -X POST http://localhost:8000/api/neighbours/discover >/dev/null || true
+        done
+        echo -e "${GREEN}[+] Radio link $a <-> $b is UP (neighbours greeted).${NC}"
     fi
 }
 
@@ -348,7 +353,7 @@ show_help() {
 Edge Nodes Management (Edge App #1, #2, #3):
 ============================================================
 Initial radio links: client_1 --p2p_12-- client_2 --p2p_23-- client_3
-Nodes discover neighbours by beacons; messages and files go only to nodes in radio range.
+Neighbours are greeted once when a link comes up; messages and files go only to nodes in radio range.
 
 Lifecycle and status:
   ./client.sh up [--offline|--online]  Start containers (background)

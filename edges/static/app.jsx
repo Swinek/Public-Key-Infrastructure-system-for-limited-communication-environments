@@ -444,7 +444,7 @@ function App() {
                 Radio Neighbours
               </h3>
               <span className="text-xs text-slate-400 font-medium">
-                {(status?.peers || []).length} in range (discovered by beacon)
+                {(status?.peers || []).length} in range
               </span>
             </div>
             <table className="w-full text-left border-collapse">
@@ -453,7 +453,7 @@ function App() {
                   <th className="py-3 px-4">Node</th>
                   <th className="py-3 px-4">ID</th>
                   <th className="py-3 px-4">Address</th>
-                  <th className="py-3 px-4">Last heard</th>
+                  <th className="py-3 px-4">Connected since</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-xs">
@@ -465,7 +465,7 @@ function App() {
                     <td className="py-3 px-4">
                       <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-                        {p.last_seen_ago_s} s ago
+                        {new Date(p.connected_since * 1000).toLocaleTimeString()}
                       </span>
                     </td>
                   </tr>

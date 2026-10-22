@@ -39,6 +39,12 @@ def get_status():
     }
 
 
+@router.post("/api/neighbours/discover", summary="Send one hello on every radio link (called by `client.sh link up`)")
+def discover_neighbours():
+    sent_on = neighbours.discover()
+    return {"node_id": config.NODE_ID, "hello_sent_on": sent_on}
+
+
 @router.get("/api/clock", summary="Query external Clock API")
 def get_external_clock(timeout: float = 3.0):
     primary_msg = None

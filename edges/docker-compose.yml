@@ -5,7 +5,7 @@
 #   p2p_23 (192.168.23.0/24): client_2 .20, client_3 .30
 # Łącze między dowolną inną parą tworzy na żądanie `client.sh link up <a> <b>` (np. p2p_13).
 # Schemat adresów: węzeł N w sieci p2p_ab ma IP 192.168.ab.N0.
-# Węzły nie znają topologii: sąsiadów wykrywają beaconem UDP (edges/neighbours.py), a wiadomości
+# Węzły nie znają topologii: sąsiadów poznają jednorazowym hello przy zestawieniu łącza (edges/neighbours.py), a wiadomości
 # i pliki wysyłają tylko do węzłów aktualnie w zasięgu (wielo-skokowość: store-and-forward, Etap 3).
 #
 # mgmt_N – osobna sieć zarządzania na węzeł (tylko gateway + client_N), żeby UI działało także po

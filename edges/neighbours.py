@@ -1,12 +1,16 @@
-"""Neighbour discovery over the radio links (UDP broadcast beacon).
+"""Neighbour discovery over the radio links: a one-time hello when a link is established.
 
-The node does not know the topology in advance. Every BEACON_INTERVAL seconds it broadcasts a small
-beacon ("I am <id>, port <port>") on each of its P2P interfaces; whoever hears it is a neighbour
-(in radio range). A neighbour that has not been heard for NEIGHBOUR_TIMEOUT seconds is dropped,
-so `client.sh link down` removes it from the table without any configuration change.
+The node does not know the topology in advance and there is no periodic traffic on the radio links.
+When a link comes up (`client.sh link up`, or node start for the initial links) the node sends ONE
+hello broadcast on each of its P2P interfaces; every node that hears it registers the sender and
+answers with ONE unicast hello-ack. Two packets per link establishment, nothing afterwards.
 
-Beacons are not authenticated - they only say who is in range. Data exchanged with a neighbour
-is verified separately (CA signature); authenticating the neighbour itself is Stage 4.
+A neighbour stays a neighbour as long as the link exists: an entry is valid only while its address
+lies in a subnet of one of this node's current P2P interfaces. `client.sh link down` removes the
+interface, so the neighbour disappears immediately - checked locally, without any radio traffic.
+
+Hello packets are not authenticated - they only say who is on the link. Data exchanged with a
+neighbour is verified separately (CA signature); authenticating the neighbour itself is Stage 4.
 """
 import ipaddress
 import json
@@ -24,9 +28,12 @@ _started = False
 
 _P2P_NET = ipaddress.ip_network(config.P2P_CIDR)
 
+HELLO = "hello"
+HELLO_ACK = "hello-ack"
+
 
 def parse_ip_addr(output: str) -> List[Dict[str, str]]:
-    """Parses `ip -4 -o addr show` into P2P interfaces: [{"ifname", "ip", "broadcast"}]."""
+    """Parses `ip -4 -o addr show` into P2P interfaces: [{"ifname", "ip", "network", "broadcast"}]."""
     result = []
     for line in output.splitlines():
         parts = line.split()
@@ -41,6 +48,7 @@ def parse_ip_addr(output: str) -> List[Dict[str, str]]:
         result.append({
             "ifname": parts[1],
             "ip": str(iface.ip),
+            "network": str(iface.network),
             "broadcast": str(iface.network.broadcast_address),
         })
     return result
@@ -55,45 +63,46 @@ def p2p_interfaces() -> List[Dict[str, str]]:
     return parse_ip_addr(out)
 
 
-def beacon_payload() -> bytes:
+def packet(kind: str) -> bytes:
     return json.dumps(
-        {"v": 1, "id": config.NODE_ID, "name": config.NODE_NAME, "port": config.PORT},
+        {"t": kind, "id": config.NODE_ID, "name": config.NODE_NAME, "port": config.PORT},
         separators=(",", ":"),
     ).encode()
 
 
-def handle_beacon(data: bytes, src_ip: str, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
-    """Registers a received beacon. Returns the neighbour entry, or None when the beacon is ignored."""
+def handle_packet(data: bytes, src_ip: str, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    """Registers the sender of a hello / hello-ack. Returns the neighbour entry (with "reply": True
+    for a hello, which must be answered with a hello-ack), or None when the packet is ignored."""
     now = time.time() if now is None else now
     try:
         if ipaddress.ip_address(src_ip) not in _P2P_NET:
             return None
-        beacon = json.loads(data.decode())
-        node_id = str(beacon["id"])
-        port = int(beacon.get("port", config.PORT))
+        msg = json.loads(data.decode())
+        kind = msg["t"]
+        node_id = str(msg["id"])
+        port = int(msg.get("port", config.PORT))
     except (ValueError, KeyError, TypeError, UnicodeDecodeError):
         return None
-    if node_id == config.NODE_ID:
+    if kind not in (HELLO, HELLO_ACK) or node_id == config.NODE_ID:
         return None
     with _LOCK:
         entry = _TABLE.get(node_id)
         if entry is None or entry["ip"] != src_ip:
-            entry = {"id": node_id, "first_seen": now}
+            entry = {"id": node_id, "connected_since": now}
             _TABLE[node_id] = entry
-        entry.update({"name": str(beacon.get("name") or node_id), "ip": src_ip, "port": port, "last_seen": now})
-        return dict(entry)
+        entry.update({"name": str(msg.get("name") or node_id), "ip": src_ip, "port": port})
+        return {**entry, "reply": kind == HELLO}
 
 
-def current(now: Optional[float] = None) -> List[Dict[str, Any]]:
-    """Neighbours heard within NEIGHBOUR_TIMEOUT, sorted by id; stale entries are removed."""
-    now = time.time() if now is None else now
+def current(interfaces: Optional[List[Dict[str, str]]] = None) -> List[Dict[str, Any]]:
+    """Neighbours on links that exist right now, sorted by id. Entries whose link is gone are removed."""
+    interfaces = p2p_interfaces() if interfaces is None else interfaces
+    networks = [ipaddress.ip_network(i["network"]) for i in interfaces]
     with _LOCK:
-        for node_id in [k for k, v in _TABLE.items() if now - v["last_seen"] > config.NEIGHBOUR_TIMEOUT]:
+        for node_id in [k for k, v in _TABLE.items()
+                        if not any(ipaddress.ip_address(v["ip"]) in net for net in networks)]:
             del _TABLE[node_id]
-        neighbours = [dict(v) for v in _TABLE.values()]
-    for n in neighbours:
-        n["last_seen_ago_s"] = round(now - n["last_seen"], 1)
-    return sorted(neighbours, key=lambda n: n["id"])
+        return sorted((dict(v) for v in _TABLE.values()), key=lambda n: n["id"])
 
 
 def get(node_id: str) -> Optional[Dict[str, Any]]:
@@ -103,34 +112,50 @@ def get(node_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _send_loop() -> None:
-    payload = beacon_payload()
-    while True:
-        for iface in p2p_interfaces():
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                    s.bind((iface["ip"], 0))
-                    s.sendto(payload, (iface["broadcast"], config.BEACON_PORT))
-            except OSError as e:
-                print(f"[BEACON] Send on {iface['ifname']} ({iface['ip']}) failed: {e}")
-        time.sleep(config.BEACON_INTERVAL)
+def _send(payload: bytes, local_ip: str, target: str, broadcast: bool = False) -> None:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        if broadcast:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.bind((local_ip, 0))
+        s.sendto(payload, (target, config.HELLO_PORT))
+
+
+def discover() -> List[str]:
+    """Sends one hello on every P2P interface (called once per link establishment). Returns used IPs."""
+    used = []
+    for iface in p2p_interfaces():
+        try:
+            _send(packet(HELLO), iface["ip"], iface["broadcast"], broadcast=True)
+            used.append(iface["ip"])
+        except OSError as e:
+            print(f"[HELLO] Send on {iface['ifname']} ({iface['ip']}) failed: {e}")
+    return used
 
 
 def _receive_loop() -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        s.bind(("", config.BEACON_PORT))
+        s.bind(("", config.HELLO_PORT))
         while True:
             data, (src_ip, _) = s.recvfrom(1024)
-            handle_beacon(data, src_ip)
+            entry = handle_packet(data, src_ip)
+            if not entry or not entry["reply"]:
+                continue
+            src = ipaddress.ip_address(src_ip)
+            local = next((i["ip"] for i in p2p_interfaces() if src in ipaddress.ip_network(i["network"])), None)
+            if local:
+                try:
+                    _send(packet(HELLO_ACK), local, src_ip)
+                except OSError as e:
+                    print(f"[HELLO] Ack to {src_ip} failed: {e}")
 
 
 def start() -> None:
-    """Starts beacon sender and receiver threads (once per process)."""
+    """Starts the listener and greets neighbours on the links that exist at node start (once per process)."""
     global _started
     if _started:
         return
     _started = True
-    threading.Thread(target=_receive_loop, name="beacon-rx", daemon=True).start()
-    threading.Thread(target=_send_loop, name="beacon-tx", daemon=True).start()
+    threading.Thread(target=_receive_loop, name="hello-rx", daemon=True).start()
+    time.sleep(0.2)  # listener ready before our own hello can be answered
+    discover()

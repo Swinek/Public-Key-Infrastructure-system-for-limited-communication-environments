@@ -20,7 +20,7 @@ from routers import network, p2p
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Neighbour discovery: beacons on the radio links (no static PEERS/ROUTES).
+    # Neighbour discovery: one hello per link at start (no static PEERS/ROUTES, no periodic traffic).
     neighbours.start()
     yield
 
@@ -29,7 +29,8 @@ app = FastAPI(
     title=f"Node API: {config.NODE_NAME}",
     description=(
         f"Node {config.NODE_NAME} ({config.NODE_ID}), port {config.PORT}. "
-        f"Neighbours are discovered by UDP beacons (port {config.BEACON_PORT}) on radio links {config.P2P_CIDR}."
+        f"Neighbours are discovered by a one-time UDP hello (port {config.HELLO_PORT}) when a radio link "
+        f"({config.P2P_CIDR}) comes up."
     ),
     version="1.0.0",
     lifespan=lifespan
@@ -50,6 +51,7 @@ def root_page():
         "node_name": config.NODE_NAME,
         "local_ips": [f"{i['ip']}:{config.PORT}" for i in neighbours.p2p_interfaces()],
         "peers": [f"{n['name']} ({n['ip']}:{n['port']})" for n in neighbours.current()],
+        "neighbours_discover": "POST /api/neighbours/discover",
         "documentation": "/docs"
     }
 

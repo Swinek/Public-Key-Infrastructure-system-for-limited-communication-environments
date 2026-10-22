@@ -57,7 +57,7 @@ projekt_inzynierski/
 │   ├── docker-compose.yml       # Orkiestracja węzłów (client_1..3, gateway, początkowe łącza p2p_12/p2p_23)
 │   ├── client.sh                # Skrypt sterowania węzłami, łączem WAN i łączami radiowymi
 │   ├── client_node.py           # Aplikacja węzła brzegowego (FastAPI)
-│   ├── neighbours.py            # Wykrywanie sąsiadów radiowych beaconem UDP
+│   ├── neighbours.py            # Sąsiedzi radiowi: jednorazowe hello przy zestawieniu łącza
 │   ├── routing.py               # Dostarczanie tylko do sąsiadów w zasięgu
 │   ├── routers/                 # Endpointy P2P, diagnostyki sieci i testu łączności
 │   ├── static/                  # Panel graficzny węzła brzegowego
@@ -144,15 +144,17 @@ ma w niej adres 192.168.<ab>.N0. Łącze między dowolną inną parą tworzy na 
 (np. `p2p_13`). Gateway nginx łączy się z każdym węzłem osobną siecią `mgmt_N` i odrzuca ruch od węzłów,
 więc nie tworzy mostu między nimi.
 
-**Węzeł nie zna topologii.** Co `BEACON_INTERVAL` (2 s) nadaje na każdym łączu radiowym beacon UDP
-(broadcast, port `BEACON_PORT` 8999, ~60 B: id, nazwa, port). Sąsiad to węzeł usłyszany w ciągu ostatnich
-`NEIGHBOUR_TIMEOUT` (7 s) – po `link down` znika z listy sam. Wiadomości i pliki trafiają **tylko do węzłów
-w zasięgu**; do pozostałych węzeł zwraca „not in radio range”. Dostarczanie przez pośredników
-(store-and-forward) to Etap 3. Beacon nie jest uwierzytelniany – mówi tylko, kto jest w zasięgu.
+**Węzeł nie zna topologii, a łączność ustala się raz.** Przy zestawieniu łącza (`link up`, a dla łączy
+początkowych – przy starcie węzła) każdy węzeł wysyła **jeden** pakiet UDP hello (broadcast, port `HELLO_PORT`
+8999: id, nazwa, port), a sąsiad odpowiada **jednym** hello-ack. Potem po łączu nie krąży nic (brak
+okresowych beaconów i pingów). Sąsiad pozostaje sąsiadem, dopóki istnieje łącze: po `link down` węzeł traci
+interfejs, więc wpis znika od razu – sprawdzane lokalnie, bez ruchu radiowego. Wiadomości i pliki trafiają
+**tylko do węzłów w zasięgu**; do pozostałych węzeł zwraca „not in radio range”. Dostarczanie przez
+pośredników (store-and-forward) to Etap 3. Hello nie jest uwierzytelniane – mówi tylko, kto jest na łączu.
 
 Konfiguracja węzła (zmienne środowiskowe):
 - `NODE_ID`, `NODE_NAME` – identyfikator i nazwa (Edge App #N),
-- `P2P_CIDR`, `BEACON_PORT`, `BEACON_INTERVAL`, `NEIGHBOUR_TIMEOUT` – wykrywanie sąsiadów (wartości domyślne w `edges/config.py`),
+- `P2P_CIDR`, `HELLO_PORT` – zakres adresów łączy radiowych i port hello (wartości domyślne w `edges/config.py`),
 - `DATA_DIR` – trwałe dane węzła (wolumen `client_N_data`): `inbox.json`, `received_files/`, `pki/` (Etap 2),
 - `PORTAL_URL` – adres portalu klienta w sieci `internet_net` (Etap 3).
 

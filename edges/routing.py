@@ -1,7 +1,7 @@
 """Delivery over the radio links: only to neighbours that are in range right now.
 
-The node has no routing table and no knowledge of the topology - its neighbours are whoever
-it currently hears (neighbours.py). A destination out of range gets NoRouteError.
+The node has no routing table and no knowledge of the topology - its neighbours are the nodes
+that answered its hello on a link that still exists (neighbours.py). Anyone else gets NoRouteError.
 
 Multi-hop delivery is Stage 3 (store-and-forward): instead of failing, the message will be kept
 and handed to neighbours on contact. The message format (msg_id, hops) is already prepared for it.
@@ -25,8 +25,8 @@ def resolve_next_hop(destination_id: str) -> Dict[str, Any]:
     if peer:
         return peer
     raise NoRouteError(
-        f"'{destination_id}' is not in radio range of {config.NODE_ID} (not heard in the last "
-        f"{config.NEIGHBOUR_TIMEOUT:g} s). Multi-hop delivery (store-and-forward) is planned for Stage 3."
+        f"'{destination_id}' is not in radio range of {config.NODE_ID} (no radio link). "
+        f"Multi-hop delivery (store-and-forward) is planned for Stage 3."
     )
 
 

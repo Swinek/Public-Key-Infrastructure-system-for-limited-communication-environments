@@ -7,14 +7,11 @@ NODE_NAME = os.getenv("NODE_NAME", "Edge App #1")
 NODE_ID = os.getenv("NODE_ID", "client_1")
 PORT = int(os.getenv("PORT", "8000"))
 
-# Neighbours are not configured - they are discovered by UDP beacons on the radio links (neighbours.py).
+# Neighbours are not configured - they are discovered by a one-time hello when a link comes up (neighbours.py).
 # P2P_CIDR: address range of radio links (p2p_<ab> = 192.168.<ab>.0/24); mgmt_N (192.168.20N.0/24)
-# and internet_net are outside it, so beacons never go there.
+# and internet_net are outside it, so hello packets never go there.
 P2P_CIDR = os.getenv("P2P_CIDR", "192.168.0.0/17")
-BEACON_PORT = int(os.getenv("BEACON_PORT", "8999"))
-BEACON_INTERVAL = float(os.getenv("BEACON_INTERVAL", "2"))
-# A neighbour not heard for this long is out of range (a few missed beacons).
-NEIGHBOUR_TIMEOUT = float(os.getenv("NEIGHBOUR_TIMEOUT", "7"))
+HELLO_PORT = int(os.getenv("HELLO_PORT", "8999"))
 
 # P2P request timeouts (connect, read). Read timeout is long because forwarding is synchronous:
 # the sender waits until every hop on the path has delivered the message.

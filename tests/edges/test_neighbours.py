@@ -1,4 +1,5 @@
-"""Wykrywanie sąsiadów beaconem (edges/neighbours.py) i dostarczanie tylko do węzłów w zasięgu (routing.py)."""
+"""Sąsiedzi poznawani jednorazowym hello przy zestawieniu łącza (edges/neighbours.py)
+i dostarczanie tylko do węzłów w zasięgu (edges/routing.py)."""
 
 from __future__ import annotations
 
@@ -19,14 +20,15 @@ IP_ADDR_OUTPUT = """\
 @pytest.fixture
 def mods(edges_env, monkeypatch):
     monkeypatch.setenv("NODE_ID", "client_1")
-    monkeypatch.setenv("NEIGHBOUR_TIMEOUT", "7")
     neighbours = importlib.import_module("neighbours")
     routing = importlib.import_module("routing")
+    # Łącza węzła 1 jak w IP_ADDR_OUTPUT: p2p_12 i p2p_13.
+    monkeypatch.setattr(neighbours, "p2p_interfaces", lambda: neighbours.parse_ip_addr(IP_ADDR_OUTPUT))
     return neighbours, routing
 
 
-def _beacon(node_id: str, name: str = "", port: int = 8000) -> bytes:
-    return json.dumps({"v": 1, "id": node_id, "name": name or node_id, "port": port}).encode()
+def _pkt(kind: str, node_id: str, name: str = "", port: int = 8000) -> bytes:
+    return json.dumps({"t": kind, "id": node_id, "name": name or node_id, "port": port}).encode()
 
 
 def test_parse_ip_addr_keeps_only_radio_links(mods):
@@ -34,59 +36,68 @@ def test_parse_ip_addr_keeps_only_radio_links(mods):
     ifaces = neighbours.parse_ip_addr(IP_ADDR_OUTPUT)
     # mgmt (192.168.201.x), internet_net (172.x) i loopback nie są łączami radiowymi.
     assert [i["ip"] for i in ifaces] == ["192.168.12.10", "192.168.13.10"]
+    assert ifaces[1]["network"] == "192.168.13.0/24"
     assert ifaces[1]["broadcast"] == "192.168.13.255"
 
 
-def test_beacon_registers_neighbour(mods):
+def test_hello_registers_and_requests_reply(mods):
     neighbours, _ = mods
-    entry = neighbours.handle_beacon(_beacon("client_2", "Edge App #2"), "192.168.12.20", now=100.0)
-    assert entry["id"] == "client_2" and entry["ip"] == "192.168.12.20" and entry["port"] == 8000
-    current = neighbours.current(now=101.0)
-    assert [n["id"] for n in current] == ["client_2"]
-    assert current[0]["name"] == "Edge App #2"
-    assert current[0]["last_seen_ago_s"] == 1.0
+    entry = neighbours.handle_packet(_pkt("hello", "client_2", "Edge App #2"), "192.168.12.20", now=100.0)
+    assert entry["reply"] is True  # na hello odpowiada się jednym hello-ack
+    current = neighbours.current()
+    assert [(n["id"], n["ip"], n["name"]) for n in current] == [("client_2", "192.168.12.20", "Edge App #2")]
+    assert current[0]["connected_since"] == 100.0
+
+
+def test_hello_ack_registers_without_reply(mods):
+    neighbours, _ = mods
+    entry = neighbours.handle_packet(_pkt("hello-ack", "client_3"), "192.168.13.30", now=100.0)
+    assert entry["reply"] is False  # na ack nikt nie odpowiada – dwa pakiety na łącze i koniec
+    assert [n["id"] for n in neighbours.current()] == ["client_3"]
 
 
 @pytest.mark.parametrize("data, src", [
-    (_beacon("client_1"), "192.168.12.20"),          # własny beacon
-    (_beacon("client_2"), "192.168.201.20"),         # spoza łączy radiowych
-    (b"not json", "192.168.12.20"),                  # uszkodzony
-    (json.dumps({"name": "x"}).encode(), "192.168.12.20"),  # brak id
+    (_pkt("hello", "client_1"), "192.168.12.20"),          # własny pakiet
+    (_pkt("hello", "client_2"), "192.168.201.20"),         # spoza łączy radiowych
+    (_pkt("ping", "client_2"), "192.168.12.20"),           # nieznany typ
+    (b"not json", "192.168.12.20"),                        # uszkodzony
+    (json.dumps({"t": "hello"}).encode(), "192.168.12.20"),  # brak id
 ])
-def test_ignored_beacons(mods, data, src):
+def test_ignored_packets(mods, data, src):
     neighbours, _ = mods
-    assert neighbours.handle_beacon(data, src, now=100.0) is None
-    assert neighbours.current(now=100.0) == []
+    assert neighbours.handle_packet(data, src) is None
+    assert neighbours.current() == []
 
 
-def test_neighbour_expires_after_timeout(mods):
+def test_neighbour_disappears_with_its_link(mods):
     neighbours, _ = mods
-    neighbours.handle_beacon(_beacon("client_2"), "192.168.12.20", now=100.0)
-    assert neighbours.current(now=106.9)
-    assert neighbours.current(now=107.1) == []  # nie słychać go dłużej niż NEIGHBOUR_TIMEOUT (link down)
+    neighbours.handle_packet(_pkt("hello", "client_2"), "192.168.12.20")
+    neighbours.handle_packet(_pkt("hello", "client_3"), "192.168.13.30")
+    # link down 1 2: interfejs p2p_12 znika -> client_2 przestaje być sąsiadem (bez żadnego ruchu radiowego).
+    only_13 = [i for i in neighbours.parse_ip_addr(IP_ADDR_OUTPUT) if i["ip"] == "192.168.13.10"]
+    assert [n["id"] for n in neighbours.current(only_13)] == ["client_3"]
+    # Wpis jest usunięty na stałe: po ponownym link up potrzebne jest nowe hello.
+    assert [n["id"] for n in neighbours.current()] == ["client_3"]
 
 
-def test_routing_only_to_neighbours_in_range(mods, monkeypatch):
+def test_routing_only_to_neighbours_in_range(mods):
     neighbours, routing = mods
-    neighbours.handle_beacon(_beacon("client_2"), "192.168.12.20", now=1000.0)
-    monkeypatch.setattr(neighbours.time, "time", lambda: 1001.0)
+    neighbours.handle_packet(_pkt("hello", "client_2"), "192.168.12.20")
 
-    assert routing.resolve_next_hop("client_2")["ip"] == "192.168.12.20"
     assert routing.peer_url(routing.resolve_next_hop("client_2"), "/x") == "http://192.168.12.20:8000/x"
-    # client_3 nie jest w zasięgu – brak tras statycznych, więc nie ma jak do niego dostarczyć.
+    # client_3 nie odpowiedział na hello – brak tras statycznych, więc nie ma jak do niego dostarczyć.
     with pytest.raises(routing.NoRouteError):
         routing.resolve_next_hop("client_3")
     assert routing.known_destinations() == [{"id": "client_2", "name": "client_2", "direct": True}]
 
 
-def test_default_recipient_requires_single_neighbour(mods, monkeypatch):
+def test_default_recipient_requires_single_neighbour(mods):
     neighbours, routing = mods
-    monkeypatch.setattr(neighbours.time, "time", lambda: 1001.0)
     with pytest.raises(routing.NoRouteError):
         routing.resolve_destination(None)  # brak sąsiadów
-    neighbours.handle_beacon(_beacon("client_2"), "192.168.12.20", now=1000.0)
+    neighbours.handle_packet(_pkt("hello", "client_2"), "192.168.12.20")
     assert routing.resolve_destination(None) == "client_2"
-    neighbours.handle_beacon(_beacon("client_3"), "192.168.13.30", now=1000.0)
+    neighbours.handle_packet(_pkt("hello-ack", "client_3"), "192.168.13.30")
     with pytest.raises(routing.NoRouteError):
         routing.resolve_destination(None)  # dwóch sąsiadów – trzeba podać odbiorcę
     assert routing.resolve_destination("client_3") == "client_3"
