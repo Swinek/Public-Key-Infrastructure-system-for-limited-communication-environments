@@ -9,26 +9,6 @@ function RadioIcon({ className = "w-4 h-4" }) {
   );
 }
 
-function WifiIcon({ className = "w-4 h-4" }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M5 12.55a11 11 0 0 1 14.08 0" />
-      <path d="M1.42 9a16 16 0 0 1 21.16 0" />
-      <path d="M8.53 16.11a6 6 0 0 1 6.95 0" />
-      <line x1="12" y1="20" x2="12.01" y2="20" />
-    </svg>
-  );
-}
-
-function ClockIcon({ className = "w-4 h-4" }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10" />
-      <polyline points="12 6 12 12 16 14" />
-    </svg>
-  );
-}
-
 function FileTextIcon({ className = "w-4 h-4" }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -139,12 +119,7 @@ function CopyIcon({ className = "w-4 h-4" }) {
 function App() {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState("tests");
-
-  const [clockResult, setClockResult] = useState(null);
-  const [p2pResult, setP2pResult] = useState(null);
-  const [internetTestResult, setInternetTestResult] = useState(null);
-  const [runningTest, setRunningTest] = useState(null);
+  const [activeTab, setActiveTab] = useState("neighbours");
 
   const [inbox, setInbox] = useState([]);
   const [recipient, setRecipient] = useState("");
@@ -177,7 +152,7 @@ function App() {
   const destinationLabel = (id) => {
     const d = destinations.find((x) => x.id === id);
     if (!d) return id || "?";
-    return d.direct ? `${d.name} (direct)` : `${d.name} (via ${d.via_name || d.via})`;
+    return `${d.name} (in range)`;
   };
 
   useEffect(() => {
@@ -234,68 +209,6 @@ function App() {
 
     return () => clearInterval(timer);
   }, []);
-
-  const handleTestClock = async () => {
-    setRunningTest("clock");
-    addLog("Querying Clock API...", "info");
-    try {
-      const res = await fetch("/api/clock");
-      const data = await res.json();
-      setClockResult(data);
-      if (data.internet_accessible) {
-        addLog(`UTC time retrieved: ${data.dateTime} (ONLINE)`, "success");
-      } else {
-        addLog("No response from external Clock API (OFFLINE)", "error");
-      }
-    } catch (err) {
-      setClockResult({ error: err.message, status: "ERROR" });
-      addLog(`Clock API error: ${err.message}`, "error");
-    } finally {
-      setRunningTest(null);
-    }
-  };
-
-  const handleTestP2P = async () => {
-    setRunningTest("p2p");
-    addLog(`Testing P2P links with ${(status?.peers || []).map((p) => p.name).join(", ") || "neighbours"}...`, "info");
-    try {
-      const res = await fetch("/api/p2p/test");
-      const data = await res.json();
-      setP2pResult(data);
-      (data.results || []).forEach((r) => {
-        if (r.p2p_connected) {
-          addLog(`P2P link to ${r.peer_name} active. RTT latency: ${r.latency_ms} ms`, "success");
-        } else {
-          addLog(`No P2P connection to ${r.peer_name}`, "error");
-        }
-      });
-    } catch (err) {
-      setP2pResult({ error: err.message, p2p_connected: false });
-      addLog(`P2P test error: ${err.message}`, "error");
-    } finally {
-      setRunningTest(null);
-    }
-  };
-
-  const handleTestInternetLink = async () => {
-    setRunningTest("internet-link");
-    addLog("Testing Internet connection...", "info");
-    try {
-      const res = await fetch("/api/internet/test");
-      const data = await res.json();
-      setInternetTestResult(data);
-      if (data.internet_connected) {
-        addLog(`Internet connection active. RTT: ${data.latency_ms} ms (Public IP: ${data.public_ip || "OK"})`, "success");
-      } else {
-        addLog("No Internet connection: OFFLINE", "error");
-      }
-    } catch (err) {
-      setInternetTestResult({ error: err.message, internet_connected: false });
-      addLog(`Internet test error: ${err.message}`, "error");
-    } finally {
-      setRunningTest(null);
-    }
-  };
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
@@ -472,79 +385,22 @@ function App() {
                 OFFLINE
               </span>
             )}
-
-            <button 
-              onClick={() => { fetchStatus(); fetchInbox(); fetchFiles(); }} 
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-600 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 shadow-2xs transition-colors cursor-pointer"
-              title="Refresh status"
-            >
-              <RefreshCwIcon className="w-3.5 h-3.5 text-slate-500" />
-              Refresh
-            </button>
           </div>
         </div>
       </nav>
 
       <main className="max-w-7xl mx-auto px-6 py-8">
-        <section className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          <div className="bg-white border border-slate-200 p-6 rounded-xl shadow-xs flex items-center gap-4">
-            <div className={`p-3 rounded-lg border ${
-              isOnline ? "bg-emerald-50 text-emerald-600 border-emerald-100" : "bg-rose-50 text-rose-600 border-rose-100"
-            }`}>
-              <WifiIcon className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Internet Status</p>
-              <h3 className={`text-base font-bold mt-0.5 ${isOnline ? "text-emerald-700" : "text-rose-700"}`}>
-                {isOnline ? "ONLINE" : "OFFLINE"}
-              </h3>
-            </div>
-          </div>
-
-          <div className="bg-white border border-slate-200 p-6 rounded-xl shadow-xs flex items-center gap-4">
-            <div className="p-3 bg-blue-50 text-blue-600 rounded-lg border border-blue-100">
-              <RadioIcon className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Radio Neighbours ({(status?.peers || []).length})</p>
-              {(status?.peers || []).map((p) => (
-                <div key={p.id} className="mt-0.5">
-                  <span className="text-sm font-bold text-slate-900">{p.name}</span>{" "}
-                  <span className="text-[11px] text-slate-500 font-mono">{p.ip}:{status?.local_port}</span>
-                </div>
-              ))}
-              {destinations.filter((d) => !d.direct).map((d) => (
-                <p key={d.id} className="text-[11px] text-slate-500">
-                  {d.name} via <span className="font-mono">{d.via}</span>
-                </p>
-              ))}
-            </div>
-          </div>
-
-          <div className="bg-white border border-slate-200 p-6 rounded-xl shadow-xs flex items-center gap-4">
-            <div className="p-3 bg-slate-50 text-slate-600 rounded-lg border border-slate-100">
-              <FileTextIcon className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Data Exchange</p>
-              <h3 className="text-base font-bold text-slate-900 mt-0.5">
-                {inbox.length} msgs / {files.length} files
-              </h3>
-            </div>
-          </div>
-        </section>
-
         <div className="bg-white border border-slate-200 rounded-xl p-4 mb-8 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex bg-slate-100 p-1 rounded-lg w-fit border border-slate-200">
             <button 
-              onClick={() => setActiveTab('tests')}
+              onClick={() => setActiveTab('neighbours')}
               className={`px-4 py-2 text-xs font-medium rounded-md transition-all cursor-pointer ${
-                activeTab === 'tests' 
+                activeTab === 'neighbours' 
                   ? 'bg-white text-slate-900 shadow-xs' 
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Diagnostics & Clock
+              Radio Neighbours ({(status?.peers || []).length})
             </button>
             <button 
               onClick={() => setActiveTab('messages')}
@@ -578,178 +434,49 @@ function App() {
             </button>
           </div>
 
-          <div className="text-xs text-slate-500 font-mono flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-indigo-500"></span>
-            Link control: <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">./client.sh internet on/off</code> <code className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">./client.sh link up/down</code>
-          </div>
         </div>
 
-        {activeTab === 'tests' && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs flex flex-col justify-between">
-              <div>
-                <div className="flex items-center pb-3 border-b border-slate-100 mb-4">
-                  <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-                    <ClockIcon className="w-4 h-4 text-indigo-600" />
-                    1. Clock API
-                  </h3>
-                </div>
-
-                {clockResult && (
-                  <div className={`p-4 rounded-lg border text-xs mb-4 leading-relaxed ${
-                    clockResult.internet_accessible 
-                      ? "bg-emerald-50 border-emerald-200 text-emerald-800" 
-                      : "bg-rose-50 border-rose-200 text-rose-800"
-                  }`}>
-                    <div className="font-semibold flex items-center gap-1.5 mb-2">
-                      {clockResult.internet_accessible ? (
-                        <>
-                          <CheckCircleIcon className="w-4 h-4 text-emerald-600" />
-                          Success: Time Retrieved
-                        </>
-                      ) : (
-                        <>
-                          <AlertTriangleIcon className="w-4 h-4 text-rose-600" />
-                          Unavailable: OFFLINE
-                        </>
-                      )}
-                    </div>
-                    {clockResult.internet_accessible ? (
-                      <div className="space-y-1 font-mono text-[11px]">
-                        <div>UTC Time: <b>{clockResult.time}</b> ({clockResult.date})</div>
-                        <div>Full Timestamp: {clockResult.dateTime}</div>
-                        <div>RTT Latency: {clockResult.latency_ms} ms</div>
-                      </div>
-                    ) : (
-                      <div className="text-[11px]">
-                        {clockResult.message}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <button
-                onClick={handleTestClock}
-                disabled={runningTest !== null}
-                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2.5 px-4 rounded-lg text-xs shadow-xs transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
-              >
-                {runningTest === "clock" ? "Querying API..." : "Query Clock API"}
-              </button>
+        {activeTab === 'neighbours' && (
+          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+            <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+              <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                <RadioIcon className="w-4 h-4 text-indigo-600" />
+                Radio Neighbours
+              </h3>
+              <span className="text-xs text-slate-400 font-medium">
+                {(status?.peers || []).length} in range (discovered by beacon)
+              </span>
             </div>
-
-            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs flex flex-col justify-between">
-              <div>
-                <div className="flex items-center pb-3 border-b border-slate-100 mb-4">
-                  <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-                    <RadioIcon className="w-4 h-4 text-blue-600" />
-                    2. P2P Connectivity
-                  </h3>
-                </div>
-
-                {p2pResult && (
-                  <div className={`p-4 rounded-lg border text-xs mb-4 leading-relaxed ${
-                    p2pResult.p2p_connected 
-                      ? "bg-blue-50 border-blue-200 text-blue-800" 
-                      : "bg-rose-50 border-rose-200 text-rose-800"
-                  }`}>
-                    <div className="font-semibold flex items-center gap-1.5 mb-2">
-                      {p2pResult.p2p_connected ? (
-                        <>
-                          <CheckCircleIcon className="w-4 h-4 text-blue-600" />
-                          P2P Links Active ({p2pResult.peers_connected}/{p2pResult.peers_total})
-                        </>
-                      ) : (
-                        <>
-                          <AlertTriangleIcon className="w-4 h-4 text-rose-600" />
-                          No P2P Connection
-                        </>
-                      )}
-                    </div>
-                    {p2pResult.error && !p2pResult.results && (
-                      <div className="text-[11px]">{p2pResult.error}</div>
-                    )}
-                    <div className="space-y-2 font-mono text-[11px]">
-                      {(p2pResult.results || []).map((r) => (
-                        <div key={r.peer_id}>
-                          <div>{r.p2p_connected ? "✓" : "✗"} <b>{r.peer_name}</b> ({r.target_address})</div>
-                          {r.p2p_connected ? (
-                            <div className="pl-3">RTT: <b>{r.latency_ms} ms</b>, Uptime={r.peer_info?.uptime_seconds}s</div>
-                          ) : (
-                            <div className="pl-3 text-rose-700 break-all">{r.error}</div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-slate-100 text-[11px] font-semibold text-slate-400 uppercase tracking-wider bg-slate-50/50">
+                  <th className="py-3 px-4">Node</th>
+                  <th className="py-3 px-4">ID</th>
+                  <th className="py-3 px-4">Address</th>
+                  <th className="py-3 px-4">Last heard</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 text-xs">
+                {(status?.peers || []).map((p) => (
+                  <tr key={p.id}>
+                    <td className="py-3 px-4 font-semibold text-slate-900">{p.name}</td>
+                    <td className="py-3 px-4 font-mono text-[11px] text-slate-500">{p.id}</td>
+                    <td className="py-3 px-4 font-mono text-[11px] text-slate-700">{p.ip}:{p.port}</td>
+                    <td className="py-3 px-4">
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+                        {p.last_seen_ago_s} s ago
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+                {(status?.peers || []).length === 0 && (
+                  <tr>
+                    <td colSpan="4" className="text-center py-8 text-slate-400 text-xs">No neighbours in radio range.</td>
+                  </tr>
                 )}
-              </div>
-
-              <button
-                onClick={handleTestP2P}
-                disabled={runningTest !== null}
-                className="w-full bg-slate-800 hover:bg-slate-900 text-white font-medium py-2.5 px-4 rounded-lg text-xs shadow-xs transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
-              >
-                {runningTest === "p2p" ? "Measuring RTT..." : "Test P2P Link"}
-              </button>
-            </div>
-
-            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs flex flex-col justify-between">
-              <div>
-                <div className="flex items-center pb-3 border-b border-slate-100 mb-4">
-                  <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-                    <WifiIcon className="w-4 h-4 text-emerald-600" />
-                    3. Internet Link
-                  </h3>
-                </div>
-
-                {internetTestResult && (
-                  <div className={`p-4 rounded-lg border text-xs mb-4 leading-relaxed ${
-                    internetTestResult.internet_connected 
-                      ? "bg-emerald-50 border-emerald-200 text-emerald-800" 
-                      : "bg-rose-50 border-rose-200 text-rose-800"
-                  }`}>
-                    <div className="font-semibold flex items-center gap-1.5 mb-2">
-                      {internetTestResult.internet_connected ? (
-                        <>
-                          <CheckCircleIcon className="w-4 h-4 text-emerald-600" />
-                          Internet Link Active
-                        </>
-                      ) : (
-                        <>
-                          <AlertTriangleIcon className="w-4 h-4 text-rose-600" />
-                          No Internet Connection
-                        </>
-                      )}
-                    </div>
-                    {internetTestResult.internet_connected ? (
-                      <div className="space-y-1 font-mono text-[11px]">
-                        <div>WAN Target: <b>{internetTestResult.target}</b></div>
-                        <div>RTT Latency: <b>{internetTestResult.latency_ms} ms</b></div>
-                        <div>Public IP: <b>{internetTestResult.public_ip || "OK"}</b></div>
-                        {internetTestResult.peer_internet_accessible && (internetTestResult.peers_internet || [])
-                          .filter((p) => p.accessible)
-                          .map((p) => (
-                            <div key={p.id} className="text-emerald-700">Node via Internet: {p.name} OK ({p.latency_ms} ms)</div>
-                          ))}
-                      </div>
-                    ) : (
-                      <div className="text-[11px]">
-                        {internetTestResult.error}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <button
-                onClick={handleTestInternetLink}
-                disabled={runningTest !== null}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-medium py-2.5 px-4 rounded-lg text-xs shadow-xs transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
-              >
-                {runningTest === "internet-link" ? "Testing WAN..." : "Test Internet Link"}
-              </button>
-            </div>
+              </tbody>
+            </table>
           </div>
         )}
 

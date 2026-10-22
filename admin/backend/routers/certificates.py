@@ -1,16 +1,12 @@
 import logging
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Query, Response
 from fastapi.responses import JSONResponse
 
 from database import get_pool, record_to_dict, records_to_list
-from pki.ca import (
-    CA_CERT_PATH,
-    CRL_PEM_PATH,
-    generate_crl,
-    initialize_ca,
-    issue_user_certificate,
-)
+from pki.ca import CA_CERT_PATH, initialize_ca, issue_user_certificate
+from pki.store import issue_crl, latest_crl
 from schemas import CertificateCreate, CertificateRevoke
+from utils import der_to_pem
 
 logger = logging.getLogger("pki_backend.certificates")
 
@@ -24,9 +20,9 @@ async def get_certificates():
     query = """
         SELECT c.id, c.user_id, c.serial_number, c.status, c.issued_at, c.revoked_at, c.revocation_reason,
                c.certificate_pem, c.fingerprint, c.valid_from, c.valid_to,
-               u.username, u.email
+               COALESCE(u.username, '(usunięty)') AS username, u.email
         FROM certificates c
-        JOIN users u ON c.user_id = u.id
+        LEFT JOIN users u ON c.user_id = u.id
         ORDER BY c.issued_at DESC
     """
     try:
@@ -127,7 +123,7 @@ async def issue_certificate(payload: CertificateCreate):
 
 @router.post("/revoke")
 async def revoke_certificate(payload: CertificateRevoke):
-    """Revoke a certificate (Certificate Revocation List - CRL)."""
+    """Revoke a certificate and sign a new CRL (same transaction: status and CRL stay consistent)."""
     reason = payload.reason or "Administrative access revocation"
     query = """
         UPDATE certificates
@@ -138,23 +134,18 @@ async def revoke_certificate(payload: CertificateRevoke):
     try:
         pool = get_pool()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(query, reason, payload.certId)
-            if row is None:
-                return JSONResponse(
-                    status_code=400,
-                    content={"error": "Certificate does not exist or has already been revoked."}
-                )
+            async with conn.transaction():
+                row = await conn.fetchrow(query, reason, payload.certId)
+                if row is None:
+                    return JSONResponse(
+                        status_code=400,
+                        content={"error": "Certificate does not exist or has already been revoked."}
+                    )
+                crl = await issue_crl(conn, "revocation")
 
-            # Rebuild CRL file dynamically with all currently revoked certificates
-            try:
-                revoked_rows = await conn.fetch(
-                    "SELECT serial_number, revoked_at FROM certificates WHERE status = 'REVOKED'"
-                )
-                generate_crl([dict(r) for r in revoked_rows])
-            except Exception as crl_err:
-                logger.warning("Failed to regenerate CRL file on revocation: %s", crl_err)
-
-            return record_to_dict(row)
+            result = record_to_dict(row)
+            result["crl_number"] = crl["crl_number"]
+            return result
     except Exception as exc:
         logger.exception("Error revoking certificate: %s", exc)
         return JSONResponse(
@@ -181,29 +172,28 @@ async def download_ca_certificate():
 
 @router.get("/crl/download")
 @router.get("/crl")
-async def download_crl():
-    """Download the latest Certificate Revocation List (CRL)."""
-    try:
-        pool = get_pool()
-        async with pool.acquire() as conn:
-            revoked_rows = await conn.fetch(
-                "SELECT serial_number, revoked_at FROM certificates WHERE status = 'REVOKED'"
-            )
-            generate_crl([dict(r) for r in revoked_rows])
-    except Exception as crl_err:
-        logger.warning("Could not dynamically generate fresh CRL: %s", crl_err)
+async def download_crl(format: str = Query("pem", pattern="^(pem|der)$")):
+    """Download the latest stored Certificate Revocation List (CRL) - does not sign a new one."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        row = await latest_crl(conn, with_der=True)
 
-    if not CRL_PEM_PATH.exists():
+    if row is None:
         return JSONResponse(
             status_code=404,
-            content={"error": "CRL file not found"}
+            content={"error": "CRL not issued yet"}
         )
 
+    if format == "der":
+        return Response(
+            content=bytes(row["crl_der"]),
+            media_type="application/pkix-crl",
+            headers={"Content-Disposition": 'attachment; filename="crl.der"'}
+        )
     return Response(
-        content=CRL_PEM_PATH.read_bytes(),
+        content=der_to_pem(bytes(row["crl_der"]), "X509 CRL"),
         media_type="application/x-pem-file",
         headers={
             "Content-Disposition": 'attachment; filename="crl.pem"'
         }
     )
-

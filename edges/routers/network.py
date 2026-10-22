@@ -6,6 +6,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 import config
+import neighbours
 import routing
 import state
 from utils import has_default_gateway, check_socket_connectivity
@@ -24,10 +25,9 @@ def get_status():
         "node_name": config.NODE_NAME,
         "client_id": config.NODE_ID,
         "client_name": config.NODE_NAME,
-        "local_ips": config.LOCAL_IPS,
+        "local_ips": [i["ip"] for i in neighbours.p2p_interfaces()],
         "local_port": config.PORT,
-        "peers": config.PEERS,
-        "routes": config.ROUTES,
+        "peers": neighbours.current(),
         "destinations": routing.known_destinations(),
         "uptime_seconds": uptime,
         "system_time_utc": datetime.now(timezone.utc).isoformat(),

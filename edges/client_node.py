@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 # Ensure edges directory is on sys.path for both direct run and module imports
@@ -13,18 +14,25 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 import config
+import neighbours
 from routers import network, p2p
 
-_peers_desc = ", ".join(f"{p['name']} ({p['ip']}:{config.PORT})" for p in config.PEERS) or "none"
-_routes_desc = ", ".join(f"{dest} via {hop}" for dest, hop in config.ROUTES.items()) or "none"
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Neighbour discovery: beacons on the radio links (no static PEERS/ROUTES).
+    neighbours.start()
+    yield
+
 
 app = FastAPI(
     title=f"Node API: {config.NODE_NAME}",
     description=(
-        f"Node {config.NODE_NAME} ({config.NODE_ID}). P2P: {', '.join(config.LOCAL_IPS)} (port {config.PORT}). "
-        f"Neighbours: {_peers_desc}. Routes: {_routes_desc}."
+        f"Node {config.NODE_NAME} ({config.NODE_ID}), port {config.PORT}. "
+        f"Neighbours are discovered by UDP beacons (port {config.BEACON_PORT}) on radio links {config.P2P_CIDR}."
     ),
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 if config.STATIC_DIR.exists():
@@ -40,9 +48,8 @@ def root_page():
         "service": "Node API",
         "node_id": config.NODE_ID,
         "node_name": config.NODE_NAME,
-        "local_ips": [f"{ip}:{config.PORT}" for ip in config.LOCAL_IPS],
-        "peers": [f"{p['name']} ({p['ip']}:{config.PORT})" for p in config.PEERS],
-        "routes": config.ROUTES,
+        "local_ips": [f"{i['ip']}:{config.PORT}" for i in neighbours.p2p_interfaces()],
+        "peers": [f"{n['name']} ({n['ip']}:{n['port']})" for n in neighbours.current()],
         "documentation": "/docs"
     }
 

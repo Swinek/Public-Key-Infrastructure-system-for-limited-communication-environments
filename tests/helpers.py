@@ -34,6 +34,9 @@ COLLIDING_MODULES = (
     "utils",
     "models",
     "client_node",
+    "routing",
+    "neighbours",
+    "store",
 )
 
 

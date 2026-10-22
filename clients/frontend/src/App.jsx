@@ -7,15 +7,15 @@ import {
   User, 
   Download,
   Radio,
-  ExternalLink,
-  RefreshCw,
   CheckCircle,
   FileText,
   Key,
   WifiOff
 } from 'lucide-react';
+import PkiStatus from './PkiStatus';
 
-const API_URL = 'http://localhost:5001/api';
+const PORTAL_URL = 'http://localhost:5001';
+const API_URL = `${PORTAL_URL}/api`;
 
 const downloadFile = (filename, content, mimeType = 'application/x-pem-file') => {
   if (!content) return;
@@ -34,7 +34,6 @@ export default function App() {
   const [users, setUsers] = useState([]);
   const [selectedUserId, setSelectedUserId] = useState(null);
   const [userCert, setUserCert] = useState(null);
-  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     fetchUsers();
@@ -50,7 +49,6 @@ export default function App() {
 
   const fetchUsers = async () => {
     try {
-      setLoading(true);
       const res = await axios.get(`${API_URL}/users`);
       setUsers(res.data);
       if (res.data.length > 0 && !selectedUserId) {
@@ -58,8 +56,6 @@ export default function App() {
       }
     } catch (err) {
       console.error('Błąd pobierania listy węzłów/użytkowników:', err);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -115,21 +111,10 @@ export default function App() {
             <div className="p-2.5 bg-emerald-600 text-white rounded-xl shadow-xs">
               <ShieldCheck className="w-5 h-5" />
             </div>
-            <div>
-              <h1 className="text-base font-bold text-slate-900 leading-tight">
-                PKI Edge Portal
-              </h1>
-              <p className="text-xs text-slate-500 font-medium">
-                Panel Samoobsługowy Węzła Polowego / Klienta
-              </p>
-            </div>
           </div>
 
           <div className="flex items-center gap-3 w-full md:w-auto justify-end">
             <div className="flex items-center gap-2">
-              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider hidden sm:block">
-                Tożsamość:
-              </label>
               <select
                 value={selectedUserId || ''}
                 onChange={(e) => setSelectedUserId(Number(e.target.value))}
@@ -142,25 +127,6 @@ export default function App() {
                 ))}
               </select>
             </div>
-
-            <button 
-              onClick={() => { fetchUsers(); if (selectedUserId) fetchUserCert(selectedUserId); }} 
-              className="p-2 text-slate-500 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 shadow-2xs transition-colors cursor-pointer"
-              title="Odśwież dane"
-            >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            </button>
-
-            <a
-              href="http://localhost:3000"
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 rounded-lg border border-indigo-200 transition-colors shadow-2xs"
-              title="Przejdź do Panelu Administratora CA (port 3000)"
-            >
-              <span>Panel Admina (3000)</span>
-              <ExternalLink className="w-3.5 h-3.5" />
-            </a>
           </div>
         </div>
       </nav>
@@ -183,9 +149,6 @@ export default function App() {
                       {selectedUser.role}
                     </span>
                   </div>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Email: <span className="font-mono text-slate-700">{selectedUser.email}</span> &bull; ID: #{selectedUser.id}
-                  </p>
                 </div>
               </div>
 
@@ -337,35 +300,11 @@ export default function App() {
                       Skontaktuj się z administratorem urzędu Root CA w celu wystawienia tożsamości.
                     </p>
                   </div>
-                  <div className="pt-2">
-                    <a
-                      href="http://localhost:3000"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-700 bg-white hover:bg-slate-100 rounded-lg border border-slate-300 transition-colors"
-                    >
-                      <span>Otwórz Panel Administratora</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </div>
                 </div>
               )}
             </div>
 
-            {/* Tactical Explanatory Card */}
-            <div className="bg-indigo-900 text-white rounded-xl p-6 shadow-md">
-              <div className="flex items-center gap-2 mb-2">
-                <Radio className="w-5 h-5 text-indigo-300" />
-                <h4 className="text-sm font-bold uppercase tracking-wider text-indigo-200">
-                  Model Weryfikacji X.509 w Środowisku Rozproszonym (Data Mule / Radio)
-                </h4>
-              </div>
-              <p className="text-xs text-indigo-100 leading-relaxed">
-                W architekturze PKI z ograniczoną łącznością stacja polowa nie łączy się z bazą danych na lądzie podczas spotkania z inną jednostką.
-                Wystarczy certyfikat <code className="bg-indigo-800 px-1.5 py-0.5 rounded text-indigo-200">ca_certificate.pem</code> oraz lista unieważnień <code className="bg-indigo-800 px-1.5 py-0.5 rounded text-indigo-200">crl.pem</code>, aby w 100% offline potwierdzić ważność certyfikatu innego statku za pomocą kryptografii asymetrycznej (RSA + SHA-256).
-              </p>
-            </div>
-
+            <PkiStatus portalUrl={PORTAL_URL} />
           </div>
         ) : (
           <div className="text-center py-12 text-slate-400">

@@ -6,8 +6,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.yml"
 CLIENTS=("client_1" "client_2" "client_3")
 INTERNET_NET="internet_net"
-# Physical radio links (one Docker network per link): p2p_<a><b> connects client_a and client_b.
-P2P_LINKS=("p2p_12" "p2p_23")
+# Radio links: one Docker network per link, p2p_<a><b> (a < b) connects client_a and client_b.
+# p2p_12 and p2p_23 come from docker-compose.yml; any other pair is created on demand by `link up`
+# (labelled P2P_LABEL, removed by `down`).
+P2P_LABEL="pki.edges.p2p-link=dynamic"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -149,11 +151,21 @@ set_link() {
     na=$(client_number "$a")
     nb=$(client_number "$b")
     local net
+    if [ "$na" -eq "$nb" ]; then
+        echo -e "${RED}[ERROR] A radio link needs two different nodes.${NC}"
+        exit 1
+    fi
     if [ "$na" -lt "$nb" ]; then net="p2p_${na}${nb}"; else net="p2p_${nb}${na}"; fi
 
     if ! docker network inspect "$net" >/dev/null 2>&1; then
-        echo -e "${RED}[ERROR] No radio link between $a and $b (network $net does not exist). Links: ${P2P_LINKS[*]}${NC}"
-        exit 1
+        if [ "$action" = "down" ]; then
+            echo -e "${CYAN}[i] Radio link $a <-> $b does not exist (already DOWN).${NC}"
+            return 0
+        fi
+        # New pair in radio range: create the link network (same addressing scheme as compose).
+        docker network create --driver bridge --internal --label "$P2P_LABEL" \
+            --subnet "192.168.${net#p2p_}.0/24" "$net" >/dev/null
+        echo -e "${GREEN}[+] Created radio link network $net (192.168.${net#p2p_}.0/24).${NC}"
     fi
 
     for client in "$a" "$b"; do
@@ -187,16 +199,21 @@ set_link() {
     fi
 }
 
+p2p_networks() {
+    docker network ls --format '{{.Name}}' | grep -E '^p2p_[0-9]+$' | sort || true
+}
+
 show_links() {
     echo -e "\n${BLUE}=== RADIO LINKS (P2P networks) ===${NC}"
-    for net in "${P2P_LINKS[@]}"; do
-        if docker network inspect "$net" >/dev/null 2>&1; then
-            local members
-            members=$(docker network inspect "$net" -f '{{range .Containers}}{{.Name}}({{.IPv4Address}}) {{end}}')
-            echo -e "  ${CYAN}$net${NC}: ${members:-<empty>}"
-        else
-            echo -e "  ${CYAN}$net${NC}: ${RED}network does not exist${NC}"
-        fi
+    local nets
+    nets=$(p2p_networks)
+    if [ -z "$nets" ]; then
+        echo -e "  ${YELLOW}no radio links${NC}"
+    fi
+    for net in $nets; do
+        local members
+        members=$(docker network inspect "$net" -f '{{range .Containers}}{{.Name}}({{.IPv4Address}}) {{end}}')
+        echo -e "  ${CYAN}$net${NC}: ${members:-<link down>}"
     done
     echo ""
 }
@@ -328,10 +345,10 @@ call_custom_endpoint() {
 
 show_help() {
     cat << EOF
-Client Nodes Management (Client 1 <-> Client 2 <-> Client 3):
+Edge Nodes Management (Edge App #1, #2, #3):
 ============================================================
-Topology (physical radio links): client_1 --p2p_12-- client_2 --p2p_23-- client_3
-Client 1 and Client 3 have no direct link; traffic between them is forwarded by Client 2.
+Initial radio links: client_1 --p2p_12-- client_2 --p2p_23-- client_3
+Nodes discover neighbours by beacons; messages and files go only to nodes in radio range.
 
 Lifecycle and status:
   ./client.sh up [--offline|--online]  Start containers (background)
@@ -344,9 +361,9 @@ Internet Flag (Enable / Disable):
   ./client.sh internet on [1|2|3|all]  Enable Internet access
   ./client.sh internet off [1|2|3|all] Disable Internet access
 
-Radio link (P2P) simulation:
+Radio link (P2P) simulation (any pair of nodes):
   ./client.sh link down 1 2            Break radio link client_1 <-> client_2
-  ./client.sh link up 1 2              Restore radio link (static IPs preserved)
+  ./client.sh link up 1 3              Bring client_1 and client_3 into radio range (creates p2p_13)
 
 Endpoint execution:
   ./client.sh clock [1|2|3|all]          GET /api/clock (external clock)
@@ -355,9 +372,9 @@ Endpoint execution:
   ./client.sh internet-check [1|2|3|all] GET /api/internet/check (socket diagnostics)
 
 P2P Communication:
-  ./client.sh msg 1 3 "Text"           Send P2P message from Client 1 to Client 3 (routed via Client 2)
+  ./client.sh msg 1 2 "Text"           Send P2P message from client_1 to client_2 (must be in radio range)
   ./client.sh inbox [1|2|3]            Display P2P inbox
-  ./client.sh send-file 1 3 <file>     Send file via P2P from Client 1 to Client 3
+  ./client.sh send-file 1 2 <file>     Send file via P2P from client_1 to client_2 (in radio range)
   ./client.sh files [1|2|3]            List received P2P files
   ./client.sh call 1 <path>            Call custom endpoint
   ./client.sh logs [1|2|3]             Follow uvicorn logs
@@ -379,6 +396,9 @@ case "$1" in
     down)
         echo -e "${YELLOW}[*] Stopping containers...${NC}"
         docker compose -f "$COMPOSE_FILE" down
+        for net in $(docker network ls -q --filter "label=$P2P_LABEL"); do
+            docker network rm "$net" >/dev/null && echo -e "${YELLOW}[-] Removed radio link network $net.${NC}"
+        done
         echo -e "${GREEN}[+] Stopped.${NC}"
         ;;
     restart)

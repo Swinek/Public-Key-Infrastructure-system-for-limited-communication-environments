@@ -1,0 +1,7 @@
+# Kontekst budowania z katalogu głównego używa tylko tests/Dockerfile - wysyłamy wyłącznie pliki requirements
+# (w szczególności nigdy admin/backend/pki_data z kluczem Root CA).
+*
+!requirements-dev.txt
+!admin/backend/requirements.txt
+!clients/backend/requirements.txt
+!edges/requirements.txt

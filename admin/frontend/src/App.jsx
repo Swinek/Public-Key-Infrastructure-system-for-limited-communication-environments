@@ -4,19 +4,15 @@ import {
   Users, 
   ShieldCheck, 
   ShieldAlert, 
-  UserPlus, 
   Trash2, 
-  RefreshCw, 
   Search, 
   CheckCircle, 
   AlertTriangle, 
-  Mail, 
-  User, 
-  Calendar, 
   Download,
   Key,
-  ExternalLink
+  Info
 } from 'lucide-react';
+import PkiPanel, { CertDetailsModal } from './PkiPanel';
 
 const API_URL = 'http://localhost:5000/api';
 
@@ -37,10 +33,6 @@ function App() {
   const [users, setUsers] = useState([]);
   const [certs, setCerts] = useState([]);
   const [activeTab, setActiveTab] = useState('users');
-  
-  const [newUsername, setNewUsername] = useState('');
-  const [newEmail, setNewEmail] = useState('');
-  const [newRole, setNewRole] = useState('user');
 
   const [showRevokeModal, setShowRevokeModal] = useState(false);
   const [selectedCertId, setSelectedCertId] = useState(null);
@@ -48,7 +40,9 @@ function App() {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [newlyIssuedCert, setNewlyIssuedCert] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [crlNotice, setCrlNotice] = useState(null);
+  const [pkiRefreshKey, setPkiRefreshKey] = useState(0);
+  const [detailsCert, setDetailsCert] = useState(null);
 
   const handleDownloadCaCert = async () => {
     try {
@@ -89,13 +83,10 @@ function App() {
 
   const fetchUsers = async () => {
     try {
-      setLoading(true);
       const res = await axios.get(`${API_URL}/users`);
       setUsers(res.data);
     } catch (err) {
       console.error('Error fetching users:', err);
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -108,29 +99,11 @@ function App() {
     }
   };
 
-  const handleAddUser = async (e) => {
-    e.preventDefault();
-    if (!newUsername || !newEmail) return;
-
-    try {
-      await axios.post(`${API_URL}/users`, {
-        username: newUsername.trim(),
-        email: newEmail.trim(),
-        role: newRole
-      });
-      setNewUsername('');
-      setNewEmail('');
-      setNewRole('user');
-      fetchUsers();
-    } catch (err) {
-      alert('Error adding user. Username or email may already be taken.');
-    }
-  };
-
   const handleDeleteUser = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this user? All associated certificates will be permanently deleted.')) return;
+    if (!window.confirm('Usunąć użytkownika? Jego aktywny certyfikat zostanie odwołany (nowa CRL), a wpisy certyfikatów zostaną w rejestrze.')) return;
     try {
       await axios.delete(`${API_URL}/users/${id}`);
+      setPkiRefreshKey((k) => k + 1);
       fetchUsers();
       fetchCerts();
     } catch (err) {
@@ -161,11 +134,13 @@ function App() {
 
   const handleRevokeCert = async () => {
     try {
-      await axios.post(`${API_URL}/certificates/revoke`, {
+      const res = await axios.post(`${API_URL}/certificates/revoke`, {
         certId: selectedCertId,
         reason: revocationReason
       });
       setShowRevokeModal(false);
+      setCrlNotice(`Certyfikat ${res.data.serial_number} odwołany – podpisano CRL #${res.data.crl_number}.`);
+      setPkiRefreshKey((k) => k + 1);
       fetchUsers();
       fetchCerts();
     } catch (err) {
@@ -193,83 +168,38 @@ function App() {
             <div className="p-2.5 bg-indigo-600 text-white rounded-xl shadow-xs">
               <Key className="w-5 h-5" />
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-base font-bold text-slate-900 leading-tight">
-                  PKI Root CA Administration
-                </h1>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-indigo-50 text-indigo-700 border border-indigo-200">
-                  Panel Administratora
-                </span>
-              </div>
-              <p className="text-xs text-slate-500 font-medium">
-                Główny Urząd Certyfikacji (Zarządzanie Tożsamościami i CRL)
-              </p>
-            </div>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-indigo-50 text-indigo-700 border border-indigo-200">
+              Panel Administratora
+            </span>
           </div>
 
-          <div className="flex items-center gap-3">
-            <button 
-              onClick={() => { fetchUsers(); fetchCerts(); }} 
-              className="p-2 text-slate-500 hover:text-slate-900 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 shadow-2xs transition-colors cursor-pointer"
-              title="Odśwież dane"
-            >
-              <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-            </button>
-
-            <a
-              href="http://localhost:3001"
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-emerald-800 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 transition-colors shadow-2xs"
-              title="Przejdź do Portalu Klienta (port 3001)"
-            >
-              <span>Portal Klienta (3001)</span>
-              <ExternalLink className="w-3.5 h-3.5" />
-            </a>
+          {/* Metrics */}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 border border-blue-100 rounded-lg">
+              <Users className="w-4 h-4 text-blue-600" />
+              <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Total Users</span>
+              <span className="text-sm font-bold text-slate-900">{users.length}</span>
+            </div>
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-100 rounded-lg">
+              <ShieldCheck className="w-4 h-4 text-emerald-600" />
+              <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Active Certificates</span>
+              <span className="text-sm font-bold text-emerald-600">
+                {certs.filter(c => c.status === 'ACTIVE').length}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 px-3 py-1.5 bg-rose-50 border border-rose-100 rounded-lg">
+              <ShieldAlert className="w-4 h-4 text-rose-600" />
+              <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Revoked (CRL)</span>
+              <span className="text-sm font-bold text-rose-600">
+                {certs.filter(c => c.status === 'REVOKED').length}
+              </span>
+            </div>
           </div>
         </div>
       </nav>
 
       {/* Main Admin Dashboard Content */}
       <main className="max-w-7xl mx-auto px-6 py-8">
-        
-        {/* Metric Cards */}
-        <section className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-          <div className="bg-white border border-slate-200 p-6 rounded-xl shadow-xs flex items-center gap-4">
-            <div className="p-3 bg-blue-50 text-blue-600 rounded-lg border border-blue-100">
-              <Users className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Total Users</p>
-              <h3 className="text-2xl font-bold text-slate-900 mt-0.5">{users.length}</h3>
-            </div>
-          </div>
-
-          <div className="bg-white border border-slate-200 p-6 rounded-xl shadow-xs flex items-center gap-4">
-            <div className="p-3 bg-emerald-50 text-emerald-600 rounded-lg border border-emerald-100">
-              <ShieldCheck className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Active Certificates</p>
-              <h3 className="text-2xl font-bold text-emerald-600 mt-0.5">
-                {certs.filter(c => c.status === 'ACTIVE').length}
-              </h3>
-            </div>
-          </div>
-
-          <div className="bg-white border border-slate-200 p-6 rounded-xl shadow-xs flex items-center gap-4">
-            <div className="p-3 bg-rose-50 text-rose-600 rounded-lg border border-rose-100">
-              <ShieldAlert className="w-5 h-5" />
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Revoked (CRL)</p>
-              <h3 className="text-2xl font-bold text-rose-600 mt-0.5">
-                {certs.filter(c => c.status === 'REVOKED').length}
-              </h3>
-            </div>
-          </div>
-        </section>
 
         {/* Action Bar and Navigation Tabs */}
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
@@ -294,28 +224,40 @@ function App() {
             >
               Certificate Registry (CRL)
             </button>
+            <button
+              onClick={() => { setActiveTab('pki'); setSearchQuery(''); }}
+              className={`px-4 py-2 text-xs font-semibold rounded-md transition-all cursor-pointer ${
+                activeTab === 'pki'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              PKI / CRL
+            </button>
+            <button
+              onClick={() => { setActiveTab('crl-entries'); setSearchQuery(''); }}
+              className={`px-4 py-2 text-xs font-semibold rounded-md transition-all cursor-pointer ${
+                activeTab === 'crl-entries'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Wpisy CRL
+            </button>
+            <button
+              onClick={() => { setActiveTab('crl-history'); setSearchQuery(''); }}
+              className={`px-4 py-2 text-xs font-semibold rounded-md transition-all cursor-pointer ${
+                activeTab === 'crl-history'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Historia CRL
+            </button>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={handleDownloadCaCert}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200 transition-colors shadow-2xs cursor-pointer"
-              title="Pobierz certyfikat Root CA w formacie PEM"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Download Root CA (PEM)
-            </button>
-
-            <button
-              onClick={handleDownloadCrl}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg border border-slate-300 transition-colors shadow-2xs cursor-pointer"
-              title="Pobierz listę odwołań CRL w formacie PEM"
-            >
-              <Download className="w-3.5 h-3.5" />
-              Download CRL (PEM)
-            </button>
-
-            <div className="relative min-w-[240px]">
+            {(activeTab === 'users' || activeTab === 'certs') && <div className="relative min-w-[240px]">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
               <input 
                 type="text"
@@ -324,75 +266,27 @@ function App() {
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg pl-9 pr-4 py-2 text-xs outline-none transition-all text-slate-900"
               />
-            </div>
+            </div>}
           </div>
         </div>
 
-        {activeTab === 'users' ? (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            {/* Add User Form */}
-            <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs h-fit">
-              <h3 className="text-sm font-semibold text-slate-900 mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
-                <UserPlus className="w-4 h-4 text-slate-500" />
-                Add New User / Edge Node
-              </h3>
-              <form onSubmit={handleAddUser} className="space-y-4">
-                <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">Username / Node ID</label>
-                  <div className="relative">
-                    <User className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                    <input 
-                      type="text" 
-                      required
-                      placeholder="e.g. ship_alpha_1" 
-                      value={newUsername}
-                      onChange={(e) => setNewUsername(e.target.value)}
-                      className="w-full border border-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg pl-9 pr-3 py-2 text-xs text-slate-900 outline-none transition-all"
-                    />
-                  </div>
-                </div>
+        {crlNotice && (
+          <div className="mb-6 flex justify-between items-center bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs font-medium rounded-lg px-4 py-3">
+            <span>{crlNotice}</span>
+            <button onClick={() => setCrlNotice(null)} className="text-emerald-600 hover:text-emerald-900 cursor-pointer">✕</button>
+          </div>
+        )}
 
-                <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">Email Address</label>
-                  <div className="relative">
-                    <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                    <input 
-                      type="email" 
-                      required
-                      placeholder="e.g. alpha@radio.local" 
-                      value={newEmail}
-                      onChange={(e) => setNewEmail(e.target.value)}
-                      className="w-full border border-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg pl-9 pr-3 py-2 text-xs text-slate-900 outline-none transition-all"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">Role</label>
-                  <select 
-                    value={newRole}
-                    onChange={(e) => setNewRole(e.target.value)}
-                    className="w-full border border-slate-200 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg px-3 py-2 text-xs text-slate-700 outline-none transition-all bg-white"
-                  >
-                    <option value="user">User / Edge Station</option>
-                    <option value="admin">Administrator</option>
-                  </select>
-                </div>
-
-                <button 
-                  type="submit" 
-                  className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2 px-4 rounded-lg text-xs transition-colors shadow-xs flex items-center justify-center gap-2 cursor-pointer mt-2"
-                >
-                  <UserPlus className="w-4 h-4" />
-                  Register Node
-                </button>
-              </form>
-            </div>
-
-            {/* Users Table */}
-            <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
+        {activeTab === 'pki' || activeTab === 'crl-entries' || activeTab === 'crl-history' ? (
+          <PkiPanel
+            apiUrl={API_URL}
+            refreshKey={pkiRefreshKey}
+            view={{ pki: 'overview', 'crl-entries': 'entries', 'crl-history': 'history' }[activeTab]}
+          />
+        ) : activeTab === 'users' ? (
+            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
               <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                <h3 className="text-sm font-semibold text-slate-900">Registered Users & Edge Nodes</h3>
+                <h3 className="text-sm font-semibold text-slate-900">Registered Edge Nodes</h3>
                 <span className="text-xs text-slate-400 font-medium">Count: {filteredUsers.length}</span>
               </div>
               <table className="w-full text-left border-collapse">
@@ -469,7 +363,6 @@ function App() {
                 </tbody>
               </table>
             </div>
-          </div>
         ) : (
           /* Certificate Registry Tab */
           <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
@@ -518,6 +411,15 @@ function App() {
                       <div className="flex items-center justify-end gap-2">
                         {cert.certificate_pem && (
                           <button
+                            onClick={() => setDetailsCert(cert)}
+                            className="p-1 text-slate-500 hover:text-indigo-600 rounded-md hover:bg-indigo-50 transition-colors cursor-pointer"
+                            title="Rozszerzenia X.509 (AKI, SKI, KeyUsage)"
+                          >
+                            <Info className="w-4 h-4" />
+                          </button>
+                        )}
+                        {cert.certificate_pem && (
+                          <button
                             onClick={() => downloadFile(`${cert.username}_cert.pem`, cert.certificate_pem)}
                             className="p-1 text-slate-500 hover:text-indigo-600 rounded-md hover:bg-indigo-50 transition-colors cursor-pointer"
                             title="Pobierz certyfikat PEM"
@@ -549,6 +451,10 @@ function App() {
           </div>
         )}
       </main>
+
+      {detailsCert && (
+        <CertDetailsModal apiUrl={API_URL} cert={detailsCert} onClose={() => setDetailsCert(null)} />
+      )}
 
       {/* Revocation Modal */}
       {showRevokeModal && (

@@ -1,16 +1,14 @@
 import logging
-import os
-from fastapi import APIRouter, Response
+
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
-import httpx
 
 from database import get_pool, record_to_dict, records_to_list
+from store import latest_ca, latest_crl, pki_object_response
 
 logger = logging.getLogger("pki_client_backend.certificates")
 
 router = APIRouter(prefix="/certificates", tags=["Certificates"])
-
-ADMIN_BACKEND_URL = os.getenv("ADMIN_BACKEND_URL", "http://admin-backend:5000")
 
 
 @router.get("")
@@ -20,9 +18,9 @@ async def get_certificates():
     query = """
         SELECT c.id, c.user_id, c.serial_number, c.status, c.issued_at, c.revoked_at, c.revocation_reason,
                c.certificate_pem, c.fingerprint, c.valid_from, c.valid_to,
-               u.username, u.email
+               COALESCE(u.username, '(usunięty)') AS username, u.email
         FROM certificates c
-        JOIN users u ON c.user_id = u.id
+        LEFT JOIN users u ON c.user_id = u.id
         ORDER BY c.issued_at DESC
     """
     try:
@@ -37,16 +35,15 @@ async def get_certificates():
             content={"error": "Server error while retrieving certificates"}
         )
 
-
 @router.get("/user/{user_id}")
 async def get_user_certificate(user_id: int):
     """Retrieve active or latest certificate credentials for a specific user/node."""
     query = """
         SELECT c.id, c.user_id, c.serial_number, c.status, c.issued_at, c.revoked_at, c.revocation_reason,
                c.certificate_pem, c.fingerprint, c.valid_from, c.valid_to,
-               u.username, u.email
+               COALESCE(u.username, '(usunięty)') AS username, u.email
         FROM certificates c
-        JOIN users u ON c.user_id = u.id
+        LEFT JOIN users u ON c.user_id = u.id
         WHERE c.user_id = $1
         ORDER BY c.issued_at DESC
         LIMIT 1
@@ -69,45 +66,28 @@ async def get_user_certificate(user_id: int):
         )
 
 
+# Pobieranie dla człowieka (portal) - domyślnie PEM. Dane czytane z bazy, bez proxy do CA.
 @router.get("/ca/download")
 @router.get("/ca")
-async def download_ca_certificate():
-    """Proxy request to fetch the Root CA certificate (PEM) from Admin CA backend."""
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"{ADMIN_BACKEND_URL}/api/certificates/ca/download")
-            if resp.status_code == 200:
-                return Response(
-                    content=resp.content,
-                    media_type="application/x-pem-file",
-                    headers={"Content-Disposition": 'attachment; filename="ca_certificate.pem"'}
-                )
-            return JSONResponse(status_code=resp.status_code, content={"error": "Upstream CA unavailable"})
-    except Exception as exc:
-        logger.warning("Could not reach upstream Admin CA backend for Root CA: %s", exc)
-        return JSONResponse(
-            status_code=503,
-            content={"error": "Root CA download temporarily unavailable from upstream CA"}
-        )
+async def download_ca_certificate(request: Request, format: str = Query("pem", pattern="^(pem|der)$")):
+    """Download the Root CA certificate stored in the database (PEM by default)."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        ca = await latest_ca(conn)
+    if ca is None:
+        return JSONResponse(status_code=404, content={"error": "Root CA not registered yet"})
+    return pki_object_response(request, bytes(ca["certificate_der"]), format, "CERTIFICATE",
+                               "ca_certificate", "application/pkix-cert", ca["fingerprint"][:16])
 
 
 @router.get("/crl/download")
 @router.get("/crl")
-async def download_crl():
-    """Proxy request to fetch the latest Certificate Revocation List (CRL) from Admin CA backend."""
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(f"{ADMIN_BACKEND_URL}/api/certificates/crl/download")
-            if resp.status_code == 200:
-                return Response(
-                    content=resp.content,
-                    media_type="application/x-pem-file",
-                    headers={"Content-Disposition": 'attachment; filename="crl.pem"'}
-                )
-            return JSONResponse(status_code=resp.status_code, content={"error": "Upstream CRL unavailable"})
-    except Exception as exc:
-        logger.warning("Could not reach upstream Admin CA backend for CRL: %s", exc)
-        return JSONResponse(
-            status_code=503,
-            content={"error": "CRL download temporarily unavailable from upstream CA"}
-        )
+async def download_crl(request: Request, format: str = Query("pem", pattern="^(pem|der)$")):
+    """Download the latest CRL stored in the database (PEM by default)."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        crl = await latest_crl(conn)
+    if crl is None:
+        return JSONResponse(status_code=404, content={"error": "CRL not issued yet"})
+    return pki_object_response(request, bytes(crl["crl_der"]), format, "X509 CRL",
+                               "crl", "application/pkix-crl", f"crl-{crl['crl_number']}")

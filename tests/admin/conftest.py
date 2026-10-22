@@ -21,8 +21,6 @@ CA_PATH_GLOBALS = {
     "PKI_DIR": None,
     "CA_KEY_PATH": "ca_private_key.pem",
     "CA_CERT_PATH": "ca_certificate.pem",
-    "CRL_PEM_PATH": "crl.pem",
-    "CRL_DER_PATH": "crl.der",
 }
 
 
@@ -41,7 +39,7 @@ def _assert_tmp_paths(ca_module, tmp_dir: Path) -> None:
 
 @pytest.fixture(scope="session")
 def ca_env(tmp_path_factory):
-    """Zainicjalizowane Root CA (RSA-4096) w katalogu tymczasowym, wspólne dla sesji.
+    """Zainicjalizowane Root CA (ECDSA P-256) w katalogu tymczasowym, wspólne dla sesji.
 
     Zwraca obiekt z polami: ``ca`` (moduł pki.ca), ``pki_dir`` (Path).
     Działa zarówno z wersją ca.py liczącą PKI_DIR na sztywno, jak i czytającą

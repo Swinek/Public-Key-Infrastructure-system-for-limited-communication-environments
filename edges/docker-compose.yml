@@ -1,10 +1,12 @@
-# Węzły brzegowe („okręty”) – fizyczna topologia łącza radiowego P2P: client_1 <-> client_2 <-> client_3.
+# Węzły brzegowe („okręty”). Początkowe łącza radiowe P2P: client_1 <-> client_2 <-> client_3.
 #
 # Sieci P2P (internal, bez internetu) modelują zasięg radiowy – jedna sieć = jedno łącze między dwoma węzłami:
 #   p2p_12 (192.168.12.0/24): client_1 .10, client_2 .20
 #   p2p_23 (192.168.23.0/24): client_2 .20, client_3 .30
-# Nie ma wspólnej sieci client_1 <-> client_3: wiadomości 1 -> 3 przechodzą przez client_2 (ROUTES).
-# Schemat adresów: węzeł N w sieci p2p_ab ma IP 192.168.ab.N0 (client.sh link up odtwarza je z tego pliku).
+# Łącze między dowolną inną parą tworzy na żądanie `client.sh link up <a> <b>` (np. p2p_13).
+# Schemat adresów: węzeł N w sieci p2p_ab ma IP 192.168.ab.N0.
+# Węzły nie znają topologii: sąsiadów wykrywają beaconem UDP (edges/neighbours.py), a wiadomości
+# i pliki wysyłają tylko do węzłów aktualnie w zasięgu (wielo-skokowość: store-and-forward, Etap 3).
 #
 # mgmt_N – osobna sieć zarządzania na węzeł (tylko gateway + client_N), żeby UI działało także po
 # `client.sh link down`. Gateway (nginx) odrzuca ruch z sieci mgmt/p2p, więc nie jest mostem między węzłami.
@@ -24,10 +26,7 @@ services:
     container_name: client_1
     environment:
       NODE_ID: "client_1"
-      NODE_NAME: "Client 1"
-      LOCAL_IPS: "192.168.12.10"
-      PEERS: "client_2:Client 2:192.168.12.20"
-      ROUTES: "client_3:Client 3=client_2"
+      NODE_NAME: "Edge App #1"
       PORT: "8000"
       DATA_DIR: "/app/data"
       PORTAL_URL: "http://pki-client-backend:5001"
@@ -45,10 +44,7 @@ services:
     container_name: client_2
     environment:
       NODE_ID: "client_2"
-      NODE_NAME: "Client 2"
-      LOCAL_IPS: "192.168.12.20,192.168.23.20"
-      PEERS: "client_1:Client 1:192.168.12.10,client_3:Client 3:192.168.23.30"
-      ROUTES: ""
+      NODE_NAME: "Edge App #2"
       PORT: "8000"
       DATA_DIR: "/app/data"
       PORTAL_URL: "http://pki-client-backend:5001"
@@ -68,10 +64,7 @@ services:
     container_name: client_3
     environment:
       NODE_ID: "client_3"
-      NODE_NAME: "Client 3"
-      LOCAL_IPS: "192.168.23.30"
-      PEERS: "client_2:Client 2:192.168.23.20"
-      ROUTES: "client_1:Client 1=client_2"
+      NODE_NAME: "Edge App #3"
       PORT: "8000"
       DATA_DIR: "/app/data"
       PORTAL_URL: "http://pki-client-backend:5001"

@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 
 import config
+import neighbours
 import routing
 import state
 from models import MessagePayload, IncomingMessage
@@ -78,13 +79,13 @@ def _test_peer(peer: Dict[str, str], timeout: float) -> Dict[str, Any]:
     return result
 
 
-@router.get("/test", summary="Test P2P connectivity with neighbours (all or ?peer_id=)")
+@router.get("/test", summary="Test P2P connectivity with neighbours in range (all or ?peer_id=)")
 def test_p2p_link(timeout: float = 3.0, peer_id: Optional[str] = None):
-    peers = config.PEERS
+    peers = neighbours.current()
     if peer_id:
-        peer = routing.get_peer(peer_id)
+        peer = neighbours.get(peer_id)
         if not peer:
-            raise HTTPException(status_code=404, detail=f"'{peer_id}' is not a direct neighbour of {config.NODE_ID}.")
+            raise HTTPException(status_code=404, detail=f"'{peer_id}' is not in radio range of {config.NODE_ID}.")
         peers = [peer]
 
     results = [_test_peer(p, timeout) for p in peers]
@@ -100,19 +101,18 @@ def test_p2p_link(timeout: float = 3.0, peer_id: Optional[str] = None):
     }
 
 
-@router.get("/destinations", summary="Known destinations (neighbours + routed)")
+@router.get("/destinations", summary="Destinations reachable now (neighbours in radio range)")
 def get_destinations():
     return {
         "node_id": config.NODE_ID,
-        "peers": config.PEERS,
-        "routes": config.ROUTES,
+        "peers": neighbours.current(),
         "destinations": routing.known_destinations()
     }
 
 
 def _relay_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     """Synchronously hands the message to the next hop towards msg['destination_id'].
-    Stage 3: this is the place to enqueue instead of failing when the next hop is unreachable."""
+    Stage 3 (store-and-forward): this is the place to enqueue instead of failing when out of range."""
     next_hop = _next_hop_or_404(msg["destination_id"])
     try:
         resp = requests.post(
@@ -128,7 +128,7 @@ def _relay_message(msg: Dict[str, Any]) -> Dict[str, Any]:
     return {"next_hop": next_hop, "response": resp.json()}
 
 
-@router.post("/send-message", summary="Send P2P message (direct or routed via neighbours)")
+@router.post("/send-message", summary="Send P2P message to a neighbour in radio range")
 def send_p2p_message(payload: MessagePayload):
     try:
         destination_id = routing.resolve_destination(payload.to)
@@ -155,7 +155,7 @@ def send_p2p_message(payload: MessagePayload):
         "status": "SENT",
         "recipient": destination_id,
         "next_hop": next_hop["id"],
-        "next_hop_address": f"{next_hop['ip']}:{config.PORT}",
+        "next_hop_address": f"{next_hop['ip']}:{next_hop.get('port', config.PORT)}",
         "route": confirmation.get("route"),
         "sent_message": outgoing,
         "delivery_confirmation": confirmation
@@ -235,7 +235,7 @@ def _relay_file(filename: str, content: bytes, content_type: Optional[str], meta
     return {"next_hop": next_hop, "response": resp.json()}
 
 
-@router.post("/send-file", summary="Send file via P2P (direct or routed via neighbours)")
+@router.post("/send-file", summary="Send file via P2P to a neighbour in radio range")
 async def send_file_to_peer(file: UploadFile = File(...), to: Optional[str] = Form(None)):
     try:
         destination_id = routing.resolve_destination(to)

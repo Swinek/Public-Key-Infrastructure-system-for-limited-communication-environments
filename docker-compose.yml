@@ -33,8 +33,11 @@ services:
       PORT: 5000
       DATABASE_URL: postgres://pki_admin:pki_secure_password@db:5432/pki_db
       PKI_DIR: /app/pki_data
+      # CRL: nowa lista co CRL_REISSUE_HOURS (i przy każdym odwołaniu), ważna CRL_VALIDITY_HOURS
+      CRL_REISSUE_HOURS: 24
+      CRL_VALIDITY_HOURS: 168
     volumes:
-      # Root CA (klucz + certyfikat) i CRL poza obrazem - przetrwają przebudowę
+      # Root CA (klucz + certyfikat) poza obrazem - przetrwa przebudowę; CRL trzymana w bazie
       - ./admin/backend/pki_data:/app/pki_data
     depends_on:
       - db
@@ -63,11 +66,10 @@ services:
       - "5001:5001"
     environment:
       PORT: 5001
-      DATABASE_URL: postgres://pki_admin:pki_secure_password@db:5432/pki_db
-      ADMIN_BACKEND_URL: http://admin-backend:5000
+      # Konto tylko do odczytu (rola tworzona w admin/backend/init.sql) - CA i CRL czytane z bazy
+      DATABASE_URL: postgres://pki_portal:pki_portal_password@db:5432/pki_db
     depends_on:
       - db
-      - admin-backend
     networks:
       - pki-network
       - internet_net
@@ -80,6 +82,26 @@ services:
       - "3001:3001"
     depends_on:
       - client-backend
+    networks:
+      - pki-network
+
+  # ============================================================================
+  # TESTY (pytest + openssl) - tylko na żądanie: docker compose --profile test run --rm tests
+  # ============================================================================
+  tests:
+    build:
+      context: .
+      dockerfile: tests/Dockerfile
+    profiles: ["test"]
+    working_dir: /repo
+    volumes:
+      - .:/repo
+    environment:
+      PYTHONDONTWRITEBYTECODE: 1
+      # Adresy dla testów integracyjnych (pytest -m docker)
+      ADMIN_URL: http://admin-backend:5000
+      PORTAL_URL: http://client-backend:5001
+    command: ["pytest"]
     networks:
       - pki-network
 

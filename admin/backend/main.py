@@ -1,12 +1,14 @@
+import asyncio
 import logging
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from database import close_db, init_db
+from database import close_db, get_pool, init_db
 from pki.ca import initialize_ca
-from routers import certificates, health, users
+from pki.store import crl_scheduler
+from routers import certificates, health, pki_admin, users
 
 logging.basicConfig(
     level=logging.INFO,
@@ -17,12 +19,17 @@ logger = logging.getLogger("pki_backend")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Lifespan context manager to handle Root CA setup and DB pool startup/shutdown."""
+    """Lifespan context manager to handle Root CA setup, DB pool and periodic CRL issuing."""
     logger.info("Starting PKI Backend with FastAPI...")
     initialize_ca()
     await init_db()
+    # Pierwsze wywołanie zapisuje certyfikat CA w bazie i w razie potrzeby wystawia CRL nr 1.
+    scheduler = asyncio.create_task(crl_scheduler(get_pool()))
     yield
     logger.info("Shutting down PKI Backend...")
+    scheduler.cancel()
+    with suppress(asyncio.CancelledError):
+        await scheduler
     await close_db()
 
 
@@ -43,6 +50,7 @@ app.add_middleware(
 
 app.include_router(users.router, prefix="/api")
 app.include_router(certificates.router, prefix="/api")
+app.include_router(pki_admin.router, prefix="/api")
 app.include_router(health.router, prefix="/api")
 
 

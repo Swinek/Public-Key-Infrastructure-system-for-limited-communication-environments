@@ -52,11 +52,10 @@ def test_crl_contains_revoked_serial_and_skips_invalid(ca_env):
     serial = int(issued["serial_number"])
     revoked_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 
-    crl_pem = ca_env.ca.generate_crl([
+    crl = ca_env.ca.generate_crl([
         {"serial_number": issued["serial_number"], "revoked_at": revoked_at},
         {"serial_number": "to-nie-jest-serial", "revoked_at": None},
-    ])
-    crl = x509.load_pem_x509_crl(crl_pem)
+    ], crl_number=1)
 
     assert crl.is_signature_valid(ca_cert.public_key())
     assert crl.issuer == ca_cert.subject
@@ -64,10 +63,6 @@ def test_crl_contains_revoked_serial_and_skips_invalid(ca_env):
     assert entry is not None
     assert entry.revocation_date_utc == revoked_at
     assert len(crl) == 1  # niepoprawny serial pominięty
-
-    # CRL zapisana w katalogu tymczasowym (PEM i DER).
-    assert ca_env.ca.CRL_PEM_PATH.read_bytes() == crl_pem
-    assert x509.load_der_x509_crl(ca_env.ca.CRL_DER_PATH.read_bytes()) == crl
 
 
 def test_initialize_ca_is_idempotent(ca_env):

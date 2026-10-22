@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import close_db, init_db
-from routers import certificates, health, users
+from routers import certificates, health, pki, users
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +42,7 @@ app.add_middleware(
 app.include_router(users.router, prefix="/api")
 app.include_router(certificates.router, prefix="/api")
 app.include_router(health.router, prefix="/api")
+app.include_router(pki.router)  # /pki/* - API dla węzłów brzegowych (bez prefiksu /api)
 
 
 @app.get("/", tags=["System"])

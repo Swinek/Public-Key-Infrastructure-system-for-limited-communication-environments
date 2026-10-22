@@ -1,67 +1,47 @@
-"""Static next-hop routing over the physical P2P topology.
+"""Delivery over the radio links: only to neighbours that are in range right now.
 
-Rule: destination is a direct neighbour (PEERS) -> send directly;
-destination is in ROUTES -> send to its next hop; otherwise -> no route.
+The node has no routing table and no knowledge of the topology - its neighbours are whoever
+it currently hears (neighbours.py). A destination out of range gets NoRouteError.
 
-Forwarding is synchronous for now. Stage 3 (store-and-forward) can plug a queue in
-behind resolve_next_hop() without changing the message format (msg_id, hops).
+Multi-hop delivery is Stage 3 (store-and-forward): instead of failing, the message will be kept
+and handed to neighbours on contact. The message format (msg_id, hops) is already prepared for it.
 """
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import config
+import neighbours
 
 
 class NoRouteError(Exception):
     pass
 
 
-def get_peer(peer_id: str) -> Optional[Dict[str, str]]:
-    for peer in config.PEERS:
-        if peer["id"] == peer_id:
-            return peer
-    return None
+def peer_url(peer: Dict[str, Any], path: str) -> str:
+    return f"http://{peer['ip']}:{peer.get('port', config.PORT)}{path}"
 
 
-def peer_url(peer: Dict[str, str], path: str) -> str:
-    return f"http://{peer['ip']}:{config.PORT}{path}"
-
-
-def resolve_next_hop(destination_id: str) -> Dict[str, str]:
-    peer = get_peer(destination_id)
+def resolve_next_hop(destination_id: str) -> Dict[str, Any]:
+    peer = neighbours.get(destination_id)
     if peer:
         return peer
-    next_hop_id = config.ROUTES.get(destination_id)
-    if next_hop_id:
-        peer = get_peer(next_hop_id)
-        if peer:
-            return peer
-    raise NoRouteError(f"No route from {config.NODE_ID} to '{destination_id}'.")
+    raise NoRouteError(
+        f"'{destination_id}' is not in radio range of {config.NODE_ID} (not heard in the last "
+        f"{config.NEIGHBOUR_TIMEOUT:g} s). Multi-hop delivery (store-and-forward) is planned for Stage 3."
+    )
 
 
-def known_destinations() -> List[Dict[str, Optional[str]]]:
-    """Destinations reachable from this node (neighbours + ROUTES keys), for UI/CLI."""
-    result = [
-        {"id": p["id"], "name": p["name"], "direct": True, "via": None, "via_name": None}
-        for p in config.PEERS
-    ]
-    for dest, hop in config.ROUTES.items():
-        if dest == config.NODE_ID or get_peer(dest):
-            continue
-        hop_peer = get_peer(hop)
-        result.append({
-            "id": dest,
-            "name": config.ROUTE_NAMES.get(dest, dest),
-            "direct": False,
-            "via": hop,
-            "via_name": hop_peer["name"] if hop_peer else hop,
-        })
-    return result
+def known_destinations() -> List[Dict[str, Any]]:
+    """Destinations reachable right now (= current neighbours), for UI/CLI."""
+    return [{"id": n["id"], "name": n["name"], "direct": True} for n in neighbours.current()]
 
 
 def resolve_destination(to: Optional[str]) -> str:
-    """Default recipient when 'to' is omitted: the only neighbour (backward compatible single-peer API)."""
+    """Default recipient when 'to' is omitted: the only neighbour in range."""
     if to:
         return to
-    if len(config.PEERS) == 1 and not config.ROUTES:
-        return config.PEERS[0]["id"]
-    raise NoRouteError("Recipient ('to') is required when the node has more than one destination.")
+    current = neighbours.current()
+    if len(current) == 1:
+        return current[0]["id"]
+    raise NoRouteError(
+        f"Recipient ('to') is required: {len(current)} neighbours in range of {config.NODE_ID}."
+    )

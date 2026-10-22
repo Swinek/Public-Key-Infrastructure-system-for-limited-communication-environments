@@ -1,55 +1,20 @@
 import os
 from pathlib import Path
-from typing import Dict, List
 
 BASE_DIR = Path(__file__).resolve().parent
 
-NODE_NAME = os.getenv("NODE_NAME", "Client 1")
+NODE_NAME = os.getenv("NODE_NAME", "Edge App #1")
 NODE_ID = os.getenv("NODE_ID", "client_1")
 PORT = int(os.getenv("PORT", "8000"))
 
-
-def _parse_list(raw: str) -> List[str]:
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
-def _parse_peers(raw: str) -> List[Dict[str, str]]:
-    """PEERS="id:Name:ip,id:Name:ip" -> [{"id", "name", "ip"}]. Name may contain ':' (split from both ends)."""
-    peers = []
-    for item in _parse_list(raw):
-        try:
-            peer_id, rest = item.split(":", 1)
-            name, ip = rest.rsplit(":", 1)
-        except ValueError:
-            raise ValueError(f"Invalid PEERS entry '{item}', expected 'id:Name:ip'")
-        peers.append({"id": peer_id.strip(), "name": name.strip() or peer_id.strip(), "ip": ip.strip()})
-    return peers
-
-
-def _parse_routes(raw: str):
-    """ROUTES="dest[:Name]=next_hop,..." -> ({dest: next_hop}, {dest: Name}). next_hop must be a direct neighbour."""
-    routes, names = {}, {}
-    for item in _parse_list(raw):
-        try:
-            dest, next_hop = item.rsplit("=", 1)
-        except ValueError:
-            raise ValueError(f"Invalid ROUTES entry '{item}', expected 'destination[:Name]=next_hop'")
-        dest_id, _, name = dest.partition(":")
-        routes[dest_id.strip()] = next_hop.strip()
-        names[dest_id.strip()] = name.strip() or dest_id.strip()
-    return routes, names
-
-
-# Direct radio neighbours (physical topology). Default: local run against a single peer.
-PEERS: List[Dict[str, str]] = _parse_peers(os.getenv("PEERS", "client_2:Client 2:127.0.0.1"))
-# Static routing table for non-neighbours: destination -> next hop (neighbour id).
-ROUTES, ROUTE_NAMES = _parse_routes(os.getenv("ROUTES", ""))
-# Own P2P addresses (display only).
-LOCAL_IPS: List[str] = _parse_list(os.getenv("LOCAL_IPS", "127.0.0.1"))
-
-_unknown_hops = {hop for hop in ROUTES.values() if hop not in {p["id"] for p in PEERS}}
-if _unknown_hops:
-    raise ValueError(f"ROUTES uses next hops that are not in PEERS: {sorted(_unknown_hops)}")
+# Neighbours are not configured - they are discovered by UDP beacons on the radio links (neighbours.py).
+# P2P_CIDR: address range of radio links (p2p_<ab> = 192.168.<ab>.0/24); mgmt_N (192.168.20N.0/24)
+# and internet_net are outside it, so beacons never go there.
+P2P_CIDR = os.getenv("P2P_CIDR", "192.168.0.0/17")
+BEACON_PORT = int(os.getenv("BEACON_PORT", "8999"))
+BEACON_INTERVAL = float(os.getenv("BEACON_INTERVAL", "2"))
+# A neighbour not heard for this long is out of range (a few missed beacons).
+NEIGHBOUR_TIMEOUT = float(os.getenv("NEIGHBOUR_TIMEOUT", "7"))
 
 # P2P request timeouts (connect, read). Read timeout is long because forwarding is synchronous:
 # the sender waits until every hop on the path has delivered the message.

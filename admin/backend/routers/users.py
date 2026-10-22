@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from database import get_pool, record_to_dict, records_to_list
+from pki.store import issue_crl
 from schemas import UserCreate
 
 logger = logging.getLogger("pki_backend.users")
@@ -72,12 +73,24 @@ async def create_user(payload: UserCreate):
 
 @router.delete("/{user_id}")
 async def delete_user(user_id: int):
-    """Delete a user and cascade-delete their certificates."""
-    query = "DELETE FROM users WHERE id = $1"
+    """Delete a user. Active certificates are revoked first and all certificates are kept
+    (detached from the user) - a revoked serial must never disappear from the CRL."""
     try:
         pool = get_pool()
         async with pool.acquire() as conn:
-            await conn.execute(query, user_id)
+            async with conn.transaction():
+                revoked = await conn.execute(
+                    """
+                    UPDATE certificates
+                    SET status = 'REVOKED', revoked_at = CURRENT_TIMESTAMP, revocation_reason = 'User deleted'
+                    WHERE user_id = $1 AND status = 'ACTIVE'
+                    """,
+                    user_id
+                )
+                await conn.execute("UPDATE certificates SET user_id = NULL WHERE user_id = $1", user_id)
+                await conn.execute("DELETE FROM users WHERE id = $1", user_id)
+                if revoked != "UPDATE 0":
+                    await issue_crl(conn, "revocation")
             return {"message": "User deleted successfully"}
     except Exception as exc:
         logger.exception("Error deleting user: %s", exc)
