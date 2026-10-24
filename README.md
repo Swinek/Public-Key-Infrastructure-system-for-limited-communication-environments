@@ -147,7 +147,10 @@ Węzeł N to para kontenerów z diagramu:
   klucz EC P-256 (nie opuszcza węzła), przy kontakcie WAN wysyła wniosek CSR, a po zatwierdzeniu w panelu CA
   (zakładka *„Wnioski CSR”*) pobiera i instaluje certyfikat, który zastępuje poprzedni. Nowy wniosek idzie sam, gdy
   certyfikatu brak, jest odwołany albo kończy się za `RENEW_BEFORE_DAYS` dni; po odrzuceniu – tylko na żądanie
-  (`client.sh csr N`). Nie ma wgrywania certyfikatu, klucza ani Root CA: Root CA jest przypięty przy wdrożeniu
+  (`client.sh csr N`). Węzeł bez internetu wysyła wniosek **przez sąsiadów** (store-and-forward): pierwszy węzeł
+  z internetem przekazuje go do portalu, a wydany certyfikat wraca tą samą drogą; pośrednicy sprawdzają podpis CSR /
+  CA przed przekazaniem, a węzeł instaluje certyfikat tylko na własny klucz (`edge_client/node/relay.py`).
+  Nie ma wgrywania certyfikatu, klucza ani Root CA: Root CA jest przypięty przy wdrożeniu
   (`CA_FINGERPRINT` w `.env`, zapisuje go `client.sh up`) i pobierany z portalu. Certyfikat można pobrać (PEM, bez klucza). Trzyma też Root CA i najnowszą CRL i **w każdej chwili
   sprawdza offline** swój certyfikat albo dowolny inny
   (łańcuch do Root CA, ważność, status w CRL – ten sam weryfikator co Edge app, `edge_app/pki`, dołączany do obrazu
@@ -282,6 +285,10 @@ Aplikacja została zaprojektowana z myślą o czytelnej demonstracji działania 
      w zakładce **„Wnioski CSR”**. **„Zatwierdź”** podpisuje certyfikat na klucz z wniosku (klucz prywatny nie
      opuszcza węzła), odwołuje poprzedni certyfikat węzła (nowa CRL) i budzi węzeł, który od razu instaluje nowy.
      **„Odrzuć”** kończy wniosek – węzeł nie wysyła go ponownie sam.
+   * Wniosek przyniesiony przez sąsiadów ma pod nazwą węzła trasę (np. *przez client_3 → client_2 → client_1*)
+     i pełny odcisk klucza. Pośrednik nie jest zaufany (mógłby złożyć wniosek z cudzym CN), więc przed
+     zatwierdzeniem porównaj odcisk z panelem węzła (stan wniosku `RELAYED`) poza systemem, np. przez radio.
+     Scenariusz: `internet on 1`, łańcuch 1 ↔ 2 ↔ 3, `client.sh csr 3` → „Zatwierdź” → `client.sh auth 3 2`.
    * Przycisk **„Issue Certificate”** (klucz generowany w CA) został tylko dla skryptów demonstracyjnych w `scripts/`.
 4. **Podgląd w Edge clientcie:**
    * W panelu Edge clienta (:3011–3013, zakładka *„Certificates”*) widać certyfikat z wynikiem weryfikacji offline,

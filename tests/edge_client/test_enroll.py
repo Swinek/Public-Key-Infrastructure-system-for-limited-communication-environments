@@ -126,5 +126,14 @@ def test_revoked_certificate_leads_to_a_new_request_not_a_new_certificate(node, 
     assert _store().certificate().serial_number == cert.serial_number  # stary zostaje do zatwierdzenia nowego
 
 
-def test_only_wan_contact_enrolls(node, portal):
-    assert node.exchange(NEIGHBOUR) is None and portal.requests == {}
+def test_radio_contact_relays_the_request_instead_of_contacting_the_portal(node, portal):
+    saf = importlib.import_module("saf")
+    assert node.exchange(NEIGHBOUR) == "relayed" and portal.requests == {}
+    pending = _store().pending()
+    assert pending["status"] == "RELAYED"
+    [item] = saf.queue()
+    assert item["type"] == "csr" and item["destination_id"] == "portal"
+    assert item["msg_id"] == pending["key_fingerprint"]  # deterministyczny id: kopie u przewoźników to jeden element
+    assert node.exchange(NEIGHBOUR) is None and len(saf.queue()) == 1  # drugi kontakt nie dubluje wniosku
+    # Węzeł dostał internet: ten sam klucz idzie bezpośrednio (portal nie zna jeszcze wniosku).
+    assert node.exchange(PORTAL) == "submitted" and list(portal.requests) == [pending["key_fingerprint"]]

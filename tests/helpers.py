@@ -54,6 +54,7 @@ COLLIDING_MODULES = (
     "saf",
     "announce",
     "enroll",
+    "relay",
 )
 
 

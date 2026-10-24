@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS csr_requests (
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     decided_at TIMESTAMPTZ
 );
+-- Etap 3c: trasa wniosku przyniesionego przez sąsiadów (np. 'client_3,client_2,client_1'); NULL = wysłany bezpośrednio.
+ALTER TABLE csr_requests ADD COLUMN IF NOT EXISTS relayed_via VARCHAR(255);
 GRANT SELECT, INSERT ON csr_requests TO pki_portal;
 GRANT USAGE ON SEQUENCE csr_requests_id_seq TO pki_portal;
 """

@@ -4,10 +4,14 @@ Węzeł (edge_client/node/enroll.py) generuje klucz sam i wysyła tylko wniosek 
 wniosku (dowód posiadania klucza) i zapisuje go w csr_requests – jedyna tabela, do której konto portalu może
 dopisywać. Decyzję i podpis certyfikatu wykonuje administrator w CA (admin/backend/routers/csr.py); wydany
 certyfikat węzeł pobiera jako dane publiczne (/pki/certs/{serial}).
+
+Węzeł bez internetu wysyła wniosek przez sąsiadów (edge_client/node/relay.py): przewoźnik z internetem składa go
+w imieniu węzła z nagłówkiem X-PKI-Route, a portal zapisuje trasę w relayed_via (do porównania przez administratora).
 """
 
 import hashlib
 import logging
+import re
 
 import asyncpg
 from cryptography import x509
@@ -25,10 +29,24 @@ router = APIRouter(prefix="/pki", tags=["PKI (węzły)"])
 
 MAX_CSR_BYTES = 4096
 FINGERPRINT = Path(..., pattern="^[0-9a-f]{64}$")
+# Wniosek przyniesiony przez sąsiadów (Etap 3c): trasa węzeł → … → przewoźnik z internetem, np. client_3,client_2,client_1.
+ROUTE_HEADER = "x-pki-route"
+ROUTE_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,50}(,[A-Za-z0-9_.-]{1,50}){1,15}$")
 
 
 class CsrRejected(ValueError):
     pass
+
+
+def parse_route(value: str | None, node_id: str) -> str | None:
+    """Trasa z nagłówka X-PKI-Route (tylko informacja dla administratora – pośrednik nie jest zaufany)."""
+    if not value:
+        return None
+    if len(value) > 255 or not ROUTE_PATTERN.match(value):
+        raise CsrRejected("Niepoprawna trasa wniosku (X-PKI-Route).")
+    if value.split(",", 1)[0] != node_id:
+        raise CsrRejected("Trasa wniosku musi zaczynać się od węzła z CN.")
+    return value
 
 
 def parse_csr(data: bytes) -> tuple[str, str, bytes]:
@@ -71,6 +89,7 @@ async def submit_csr(request: Request):
     data = await request.body()
     try:
         node_id, fingerprint, csr_der = parse_csr(data)
+        route = parse_route(request.headers.get(ROUTE_HEADER), node_id)
     except CsrRejected as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
@@ -88,11 +107,11 @@ async def submit_csr(request: Request):
         async with conn.transaction():
             await conn.execute("SET TRANSACTION READ WRITE")  # konto portalu domyślnie tylko do odczytu
             await conn.execute(
-                "INSERT INTO csr_requests (node_id, key_fingerprint, csr_der) VALUES ($1, $2, $3)",
-                node_id, fingerprint, csr_der,
+                "INSERT INTO csr_requests (node_id, key_fingerprint, csr_der, relayed_via) VALUES ($1, $2, $3, $4)",
+                node_id, fingerprint, csr_der, route,
             )
         row = await _status(conn, fingerprint)
-    logger.info("Wniosek CSR od %s (klucz %s...)", node_id, fingerprint[:16])
+    logger.info("Wniosek CSR od %s (klucz %s...)%s", node_id, fingerprint[:16], f" przez {route}" if route else "")
     return _public(row)
 
 

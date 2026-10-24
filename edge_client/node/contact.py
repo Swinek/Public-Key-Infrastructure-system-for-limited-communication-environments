@@ -114,8 +114,8 @@ def trigger(peer: Dict[str, Any], wait: bool = False) -> Dict[str, Any]:
         return dict(event)
 
 
-def on_wan() -> Dict[str, Any]:
-    return trigger(portal_peer())
+def on_wan(wait: bool = False) -> Dict[str, Any]:
+    return trigger(portal_peer(), wait)
 
 
 def on_neighbour(entry: Dict[str, Any]) -> Dict[str, Any]:

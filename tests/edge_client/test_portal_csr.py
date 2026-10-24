@@ -44,3 +44,11 @@ def test_request_without_cn_is_refused(csr_module):
     der = _csr(ec.generate_private_key(ec.SECP256R1()), cn=None).public_bytes(serialization.Encoding.DER)
     with pytest.raises(csr_module.CsrRejected, match="CN"):
         csr_module.parse_csr(der)
+
+
+def test_route_of_a_relayed_request(csr_module):
+    assert csr_module.parse_route(None, "client_3") is None
+    assert csr_module.parse_route("client_3,client_2,client_1", "client_3") == "client_3,client_2,client_1"
+    for bad in ("client_2,client_1", "client_3", "client_3,<script>", ",".join(["client_3"] + ["n"] * 20)):
+        with pytest.raises(csr_module.CsrRejected):
+            csr_module.parse_route(bad, "client_3")

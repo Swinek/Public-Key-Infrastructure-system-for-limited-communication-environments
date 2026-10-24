@@ -76,7 +76,7 @@ export default function CsrPanel({ apiUrl, onChanged }) {
       )}
       {requests.length === 0 ? (
         <p className="text-xs text-slate-400 py-10 text-center">
-          Brak wniosków. Węzeł wysyła wniosek sam przy kontakcie WAN, gdy nie ma ważnego certyfikatu.
+          Brak wniosków. Węzeł wysyła wniosek sam przy kontakcie WAN (albo przez sąsiadów), gdy nie ma ważnego certyfikatu.
         </p>
       ) : (
         <table className="w-full text-xs">
@@ -92,9 +92,21 @@ export default function CsrPanel({ apiUrl, onChanged }) {
           <tbody className="divide-y divide-slate-100">
             {requests.map((r) => (
               <tr key={r.id}>
-                <td className="px-6 py-3 font-semibold text-slate-900">{r.node_id}</td>
-                <td className="px-6 py-3 font-mono text-slate-500" title={r.key_fingerprint}>
-                  {r.key_fingerprint.slice(0, 24)}…
+                <td className="px-6 py-3">
+                  <div className="font-semibold text-slate-900">{r.node_id}</div>
+                  {r.relayed_via && (
+                    <div className="text-[10px] text-amber-700 mt-1" title="Wniosek przynieśli sąsiedzi – pośrednik nie jest zaufany">
+                      przez {r.relayed_via.split(',').join(' → ')}
+                    </div>
+                  )}
+                </td>
+                <td className="px-6 py-3 font-mono text-slate-500 break-all" title={r.key_fingerprint}>
+                  {r.relayed_via ? r.key_fingerprint : `${r.key_fingerprint.slice(0, 24)}…`}
+                  {r.relayed_via && r.status === 'PENDING' && (
+                    <div className="font-sans text-[10px] text-amber-700 mt-1">
+                      Porównaj odcisk z panelem węzła (np. przez radio) przed zatwierdzeniem.
+                    </div>
+                  )}
                 </td>
                 <td className="px-6 py-3 text-slate-500">{formatDate(r.created_at)}</td>
                 <td className="px-6 py-3">

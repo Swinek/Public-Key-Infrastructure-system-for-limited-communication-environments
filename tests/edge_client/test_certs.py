@@ -19,7 +19,7 @@ def module(edge_client_node_env, monkeypatch):
     monkeypatch.setenv("EDGE_APP_URL", "http://app_1:8000")
     module = importlib.import_module("routers.certs")
     monkeypatch.setattr(importlib.import_module("contact"), "announce", lambda *a, **k: [])
-    monkeypatch.setattr(importlib.import_module("contact"), "on_wan", lambda: {"status": "skipped"})
+    monkeypatch.setattr(importlib.import_module("contact"), "on_wan", lambda wait=False: {"status": "skipped"})
     return module
 
 

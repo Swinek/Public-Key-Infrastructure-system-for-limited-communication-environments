@@ -92,6 +92,7 @@ function Feedback({ result }) {
 const REQUEST_STYLES = {
   NEW: "bg-slate-50 text-slate-600 border-slate-200",
   PENDING: "bg-amber-50 text-amber-800 border-amber-200",
+  RELAYED: "bg-sky-50 text-sky-700 border-sky-200",
   APPROVED: "bg-emerald-50 text-emerald-700 border-emerald-200",
   REJECTED: "bg-rose-50 text-rose-700 border-rose-200"
 };
@@ -136,6 +137,12 @@ function RequestCard({ store, onChanged }) {
             REQUEST_STYLES[request.status] || REQUEST_STYLES.NEW}`}>{request.status}</span>
           <div className="font-mono break-all" title="SHA-256 of the public key">{request.key_fingerprint}</div>
           <div>Created {fmtDate(request.created_at)}{request.reason ? ` – ${request.reason}` : ""}</div>
+          {request.status === "RELAYED" && (
+            <div className="text-sky-700">
+              Carried to the CA by the neighbours. The CA panel shows this key fingerprint with the route – compare
+              them out of band before the administrator approves.
+            </div>
+          )}
         </div>
       ) : (
         <p className="text-[11px] text-slate-500">

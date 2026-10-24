@@ -36,19 +36,25 @@ async def offer(request: Request, body: OfferRequest):
                      _wire(request, response, request_body) - inline, saved_bytes=saved, encoding="JSON",
                      note=f"{len(items)} item(s) offered")
     for item in items:
-        if item["type"] == "msg":  # file content is recorded when it is downloaded
+        if item["type"] == "msg":  # file / csr / cert content is recorded when it is downloaded
             transfers.record("msg", "out", peer, len(item["message"].encode()), wire.json_payload_size(item),
                              number=item["msg_id"], note=f"for {item['destination_id']}")
+        elif item["type"] == "csr_result":
+            transfers.record("csr", "out", peer, wire.json_payload_size(item["result"]),
+                             wire.json_payload_size(item), number=item["msg_id"],
+                             note=f"result for {item['destination_id']}")
     return response
 
 
-@router.get("/items/{msg_id}/content", summary="Content of a file item (raw bytes)")
+@router.get("/items/{msg_id}/content", summary="Content of a file / csr / cert item (raw bytes)")
 def item_content(request: Request, msg_id: str):
     data = saf.content(msg_id)
     if data is None:
         raise HTTPException(status_code=404, detail="Item not carried by this node.")
     response = Response(content=data, media_type="application/octet-stream")
-    transfers.record("file", "out", peer_id(request), len(data), _wire(request, response, 0), number=msg_id)
+    kind = saf.transfer_kind(saf.carried(msg_id) or {"type": "file"})
+    transfers.record(kind, "out", peer_id(request), len(data), _wire(request, response, 0),
+                     encoding="DER" if kind in ("csr", "cert") else None, number=msg_id)
     return response
 
 

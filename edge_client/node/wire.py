@@ -99,8 +99,8 @@ def post_json(url: str, payload: Any, limit: int) -> Fetched:
     return _send("POST", url, limit, {"Content-Type": "application/json"}, data=body)
 
 
-def post_bytes(url: str, body: bytes, content_type: str, limit: int) -> Fetched:
-    return _send("POST", url, limit, {"Content-Type": content_type}, data=body)
+def post_bytes(url: str, body: bytes, content_type: str, limit: int, headers: Optional[dict] = None) -> Fetched:
+    return _send("POST", url, limit, {"Content-Type": content_type, **(headers or {})}, data=body)
 
 
 def peer_url(peer: Mapping[str, Any], path: str) -> str:

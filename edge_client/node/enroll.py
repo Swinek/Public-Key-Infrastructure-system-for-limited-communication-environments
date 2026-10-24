@@ -8,6 +8,11 @@ On every WAN contact (contact.py, after pki_sync - the Root CA and the newest CR
     2. no request, but the node needs a certificate (none, revoked, from another CA, expiring within
        RENEW_BEFORE_DAYS) -> new key + CSR (CN = NODE_ID), POST /pki/csr
 
+On a radio contact (Stage 3c) the node that needs a certificate and has a request not sent yet (NEW) puts the CSR
+into the store-and-forward queue for the portal and marks it RELAYED; a neighbour with internet hands it over and
+the certificate comes back the same way (relay.py, saf.py). If the node gets internet itself, step 1 continues
+with the same key (the portal accepts the same key idempotently).
+
 The node never holds two certificates: the current one stays in use until the new one is installed, then it is
 replaced (and the CA revokes the old one). The private key never leaves the node; only the CSR and the
 certificate - public data - travel over the link. Revocation by the administrator therefore does not end in an
@@ -21,6 +26,8 @@ from typing import Any, Dict, Optional
 import certs
 import config
 import contact
+import neighbours
+import saf
 import transfers
 import wire
 
@@ -76,13 +83,34 @@ def _install(peer: Dict[str, Any], serial: str) -> bool:
     return installed
 
 
-def exchange(peer: Dict[str, Any]) -> Optional[str]:
-    """Contact handler (WAN only): follow up the pending request or file a new one."""
-    if peer["kind"] != contact.WAN:
+def relay(store: certs.CertStore) -> Optional[str]:
+    """Radio contact: a request not sent yet goes to the portal with the neighbours (store-and-forward)."""
+    pending = store.pending()
+    if pending is None:
+        reason = needs_certificate(store)
+        if reason is None:
+            return None
+        print(f"[ENROLL] {reason} - new key and CSR (via the neighbours)")
+        pending = store.new_request(config.NODE_ID)
+    if pending.get("status") != "NEW":
         return None
+    item = saf.new_item("csr", saf.PORTAL, content=pending["csr_der"], msg_id=pending["key_fingerprint"])
+    store.set_pending_status("RELAYED")
+    result = saf.enqueue_local(item, pending["csr_der"])
+    print(f"[ENROLL] CSR (key {pending['key_fingerprint'][:16]}...) queued for the portal, "
+          f"announced to {result['announced_to']}")
+    return "relayed"
+
+
+def exchange(peer: Dict[str, Any]) -> Optional[str]:
+    """Contact handler: over WAN follow up the pending request or file a new one; over radio relay it."""
     store = certs.get_store()
     if store.ca() is None:
         return None  # no pinned Root CA yet - nothing to check a certificate against
+    if peer["kind"] == contact.NEIGHBOUR:
+        return relay(store)
+    if peer["kind"] != contact.WAN:
+        return None
     pending = store.pending()
     if pending is not None:
         if pending.get("status") == "REJECTED":
@@ -114,8 +142,12 @@ def exchange(peer: Dict[str, Any]) -> Optional[str]:
 
 def request_now() -> Dict[str, Any]:
     """Operator's 'new request' (also after a rejection): new key + CSR, sent on the next WAN contact."""
-    request = certs.get_store().new_request(config.NODE_ID)
-    contact.on_wan()  # if the portal is reachable, the request goes out now; otherwise on `internet on`
+    store = certs.get_store()
+    request = store.new_request(config.NODE_ID)
+    contact.on_wan(wait=True)  # portal reachable: the request goes out now
+    if (store.pending() or {}).get("status") == "NEW" and neighbours.current():
+        relay(store)  # no internet: with the neighbours in range; otherwise on the next contact
+    request = store.pending() or request
     return {k: v for k, v in request.items() if k != "csr_der"}
 
 

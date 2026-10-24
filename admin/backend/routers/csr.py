@@ -5,6 +5,10 @@ Wniosek trafia do bazy przez portal (edge_client/backend/routers/pki.py, POST /p
     - zarejestrowanie węzła (użytkownik o nazwie = CN), jeśli jeszcze go nie ma,
     - odwołanie poprzedniego aktywnego certyfikatu węzła (węzeł ma jeden certyfikat naraz) i nowa CRL,
     - NOTIFY cert_issued: portal budzi węzły online, a węzeł pobiera certyfikat przy tym kontakcie.
+
+Wniosek węzła bez internetu przynoszą sąsiedzi (Etap 3c, relayed_via = trasa). Pośrednik mógłby złożyć wniosek
+z cudzym CN i własnym kluczem, dlatego przed zatwierdzeniem odcisk klucza porównuje się poza systemem z odciskiem
+widocznym w panelu węzła.
 """
 
 import logging
@@ -22,7 +26,7 @@ logger = logging.getLogger("pki_backend.csr")
 router = APIRouter(prefix="/csr", tags=["CSR (wnioski węzłów)"])
 
 COLUMNS = """r.id, r.node_id, r.key_fingerprint, r.status, r.reason, r.created_at, r.decided_at,
-             r.certificate_id, c.serial_number, length(r.csr_der) AS size_der"""
+             r.certificate_id, c.serial_number, length(r.csr_der) AS size_der, r.relayed_via"""
 
 
 @router.get("")

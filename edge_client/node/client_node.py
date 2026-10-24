@@ -15,10 +15,12 @@ from fastapi.staticfiles import StaticFiles
 
 import config
 import neighbours
-# Contact handlers register themselves in contact.py on import, in this order: PKI, own certificate, store-and-forward.
+# Contact handlers register themselves in contact.py on import, in this order: PKI, store-and-forward (a carried
+# certificate may arrive), own certificate, requests carried for other nodes.
 import pki_sync  # noqa: F401
-import enroll  # noqa: F401  (after pki_sync: needs the Root CA and the newest CRL)
 import saf  # noqa: F401
+import enroll  # noqa: F401  (after pki_sync: needs the Root CA and the newest CRL)
+import relay  # noqa: F401
 from routers import certs, contact, network, p2p, pki, saf as saf_router, stats
 
 
