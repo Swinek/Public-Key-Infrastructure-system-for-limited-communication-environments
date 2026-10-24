@@ -7,8 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from database import close_db, get_pool, init_db
 from pki.ca import initialize_ca
-from pki.store import crl_scheduler
-from routers import certificates, health, pki_admin, users
+from pki.store import crl_scheduler, ensure_csr_schema
+from routers import certificates, csr, health, pki_admin, users
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +23,8 @@ async def lifespan(app: FastAPI):
     logger.info("Starting PKI Backend with FastAPI...")
     initialize_ca()
     await init_db()
+    async with get_pool().acquire() as conn:
+        await ensure_csr_schema(conn)
     # Pierwsze wywołanie zapisuje certyfikat CA w bazie i w razie potrzeby wystawia CRL nr 1.
     scheduler = asyncio.create_task(crl_scheduler(get_pool()))
     yield
@@ -51,6 +53,7 @@ app.add_middleware(
 app.include_router(users.router, prefix="/api")
 app.include_router(certificates.router, prefix="/api")
 app.include_router(pki_admin.router, prefix="/api")
+app.include_router(csr.router, prefix="/api")
 app.include_router(health.router, prefix="/api")
 
 

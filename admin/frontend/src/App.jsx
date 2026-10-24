@@ -12,6 +12,7 @@ import {
   Key
 } from 'lucide-react';
 import PkiPanel from './PkiPanel';
+import CsrPanel from './CsrPanel';
 
 const API_URL = 'http://localhost:5000/api';
 
@@ -217,6 +218,16 @@ function App() {
             >
               PKI / CRL
             </button>
+            <button
+              onClick={() => { setActiveTab('csr'); setSearchQuery(''); }}
+              className={`px-4 py-2 text-xs font-semibold rounded-md transition-all cursor-pointer ${
+                activeTab === 'csr'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              Wnioski CSR
+            </button>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -240,7 +251,9 @@ function App() {
           </div>
         )}
 
-        {activeTab === 'pki' ? (
+        {activeTab === 'csr' ? (
+          <CsrPanel apiUrl={API_URL} onChanged={() => { setPkiRefreshKey((k) => k + 1); fetchUsers(); fetchCerts(); }} />
+        ) : activeTab === 'pki' ? (
           <PkiPanel apiUrl={API_URL} refreshKey={pkiRefreshKey} />
         ) : (
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">

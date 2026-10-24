@@ -3,8 +3,8 @@
 The node has no routing table and no knowledge of the topology - its neighbours are the nodes
 that answered its hello on a link that still exists (neighbours.py). Anyone else gets NoRouteError.
 
-Multi-hop delivery is Stage 3 (store-and-forward): instead of failing, the message will be kept
-and handed to neighbours on contact. The message format (msg_id, hops) is already prepared for it.
+A destination out of range is not an error for messages and files: routers/p2p.py hands them to the
+store-and-forward queue (saf.py), which carries them hop by hop on later contacts.
 """
 from typing import Any, Dict, List, Optional
 
@@ -25,8 +25,7 @@ def resolve_next_hop(destination_id: str) -> Dict[str, Any]:
     if peer:
         return peer
     raise NoRouteError(
-        f"'{destination_id}' is not in radio range of {config.NODE_ID} (no radio link). "
-        f"Multi-hop delivery (store-and-forward) is planned for Stage 3."
+        f"'{destination_id}' is not in radio range of {config.NODE_ID} (no radio link)."
     )
 
 

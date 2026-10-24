@@ -17,3 +17,6 @@ edge_app/data/
 # Notatki i wytyczne dla asystentów AI - tylko lokalnie
 AGENTS.md
 CLAUDE.md
+
+# Ustawienia wdrożenia (CA_FINGERPRINT zapisuje client.sh up)
+.env

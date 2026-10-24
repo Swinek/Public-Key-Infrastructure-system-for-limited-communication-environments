@@ -49,7 +49,11 @@ CREATE TABLE IF NOT EXISTS crls (
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Tabela csr_requests (wnioski CSR węzłów) i jej uprawnienia dla portalu powstają przy starcie CA
+-- (admin/backend/pki/store.py: CSR_SCHEMA), także w już istniejącej bazie.
+
 -- Konto portalu klienta: tylko odczyt (portal nie podpisuje i nie zmienia danych PKI).
+-- Wyjątek: dodawanie wniosków CSR (csr_requests) – decyzję i podpis wykonuje wyłącznie CA.
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'pki_portal') THEN

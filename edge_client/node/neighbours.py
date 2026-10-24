@@ -9,6 +9,9 @@ A neighbour stays a neighbour as long as the link exists: an entry is valid only
 lies in a subnet of one of this node's current P2P interfaces. `client.sh link down` removes the
 interface, so the neighbour disappears immediately - checked locally, without any radio traffic.
 
+Every hello / hello-ack received is a contact with that neighbour (contact.on_neighbour) - the
+moment when Stage 3 exchanges (CRL/CA sync, store-and-forward) run over this link.
+
 Hello packets are not authenticated - they only say who is on the link. Data exchanged with a
 neighbour is verified separately (CA signature); authenticating the neighbour itself is Stage 4.
 """
@@ -21,6 +24,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import config
+import contact
 
 _LOCK = threading.Lock()
 _TABLE: Dict[str, Dict[str, Any]] = {}
@@ -112,6 +116,20 @@ def get(node_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def is_radio(ip: Optional[str]) -> bool:
+    """True for an address on a radio link (P2P_CIDR) - not the local host, mgmt_N or internet_net."""
+    try:
+        return ip is not None and ipaddress.ip_address(ip) in _P2P_NET
+    except ValueError:
+        return False
+
+
+def by_ip(ip: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Neighbour that has this address (the source of an incoming request), without checking the links."""
+    with _LOCK:
+        return next((dict(v) for v in _TABLE.values() if v["ip"] == ip), None)
+
+
 def _send(payload: bytes, local_ip: str, target: str, broadcast: bool = False) -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         if broadcast:
@@ -120,10 +138,13 @@ def _send(payload: bytes, local_ip: str, target: str, broadcast: bool = False) -
         s.sendto(payload, (target, config.HELLO_PORT))
 
 
-def discover() -> List[str]:
-    """Sends one hello on every P2P interface (called once per link establishment). Returns used IPs."""
+def discover(network: Optional[str] = None) -> List[str]:
+    """Sends one hello on every P2P interface, or only on the one in `network` (the link that just came up -
+    the other links are unchanged and need no new exchange). Returns used IPs."""
     used = []
     for iface in p2p_interfaces():
+        if network and iface["network"] != str(ipaddress.ip_network(network, strict=False)):
+            continue
         try:
             _send(packet(HELLO), iface["ip"], iface["broadcast"], broadcast=True)
             used.append(iface["ip"])
@@ -139,7 +160,12 @@ def _receive_loop() -> None:
         while True:
             data, (src_ip, _) = s.recvfrom(1024)
             entry = handle_packet(data, src_ip)
-            if not entry or not entry["reply"]:
+            if not entry:
+                continue
+            # Contact with this neighbour: the receiver of a hello and the receiver of the hello-ack
+            # each start their own exchange with the other (contact.py).
+            contact.on_neighbour(entry)
+            if not entry["reply"]:
                 continue
             src = ipaddress.ip_address(src_ip)
             local = next((i["ip"] for i in p2p_interfaces() if src in ipaddress.ip_network(i["network"])), None)

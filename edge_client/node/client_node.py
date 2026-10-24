@@ -15,7 +15,11 @@ from fastapi.staticfiles import StaticFiles
 
 import config
 import neighbours
-from routers import certs, network, p2p
+# Contact handlers register themselves in contact.py on import, in this order: PKI, own certificate, store-and-forward.
+import pki_sync  # noqa: F401
+import enroll  # noqa: F401  (after pki_sync: needs the Root CA and the newest CRL)
+import saf  # noqa: F401
+from routers import certs, contact, network, p2p, pki, saf as saf_router, stats
 
 
 @asynccontextmanager
@@ -60,6 +64,10 @@ def root_page():
 app.include_router(network.router)
 app.include_router(p2p.router)
 app.include_router(certs.router)
+app.include_router(contact.router)
+app.include_router(pki.router)
+app.include_router(saf_router.router)
+app.include_router(stats.router)
 
 
 if __name__ == "__main__":

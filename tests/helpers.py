@@ -47,6 +47,13 @@ COLLIDING_MODULES = (
     "neighbours",
     "store",
     "certs",
+    "contact",
+    "wire",
+    "transfers",
+    "pki_sync",
+    "saf",
+    "announce",
+    "enroll",
 )
 
 

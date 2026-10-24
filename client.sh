@@ -115,6 +115,8 @@ set_internet() {
                 docker network connect --alias "inet-$client" "$INTERNET_NET" "$client"
                 echo -e "${GREEN}[+] $client: Internet access ENABLED (ONLINE).${NC}"
             fi
+            # Contact with the portal: the node starts its WAN exchanges (also on a repeated `internet on`).
+            docker exec "$client" curl -s -X POST http://localhost:8000/api/contact/wan >/dev/null || true
         elif [ "$action" = "off" ]; then
             if has_internet_access "$client"; then
                 docker network disconnect "$INTERNET_NET" "$client"
@@ -198,11 +200,10 @@ set_link() {
     if [ "$action" = "down" ]; then
         echo -e "${YELLOW}[-] Radio link $a <-> $b is DOWN.${NC}"
     else
-        # Link established: each node sends ONE hello on its radio links, the other answers once.
-        for client in "$a" "$b"; do
-            is_container_running "$client" && \
-                docker exec "$client" curl -s -X POST http://localhost:8000/api/neighbours/discover >/dev/null || true
-        done
+        # Link established: node a sends ONE hello on this link only, node b answers with one hello-ack.
+        # Each of them then exchanges data with the other exactly once (contact.py); other links are unchanged.
+        is_container_running "$a" && \
+            docker exec "$a" curl -s -X POST "http://localhost:8000/api/neighbours/discover?network=192.168.${net#p2p_}.0/24" >/dev/null || true
         echo -e "${GREEN}[+] Radio link $a <-> $b is UP (neighbours greeted).${NC}"
     fi
 }
@@ -348,36 +349,44 @@ app_container() {
     echo "app_$(client_number "$1")"
 }
 
-# cert-upload <N> <file>... (cert, key, Root CA, CRL in any order, recognised by content; field=<file> also works).
-# A new certificate + key replaces the stored one (one certificate per node).
-upload_cert() {
+# Root CA pinned at deployment: the fingerprint of the public CA certificate goes to .env (CA_FINGERPRINT),
+# from which docker-compose.edge.yml passes it to every edge client and edge app. Without it a node accepts no CA.
+CA_CERT_FILE="$SCRIPT_DIR/admin/backend/pki_data/ca_certificate.pem"
+pin_ca() {
+    local fp
+    if [ -n "$CA_FINGERPRINT" ]; then
+        fp="$CA_FINGERPRINT"
+    elif [ -f "$CA_CERT_FILE" ]; then
+        fp=$(openssl x509 -in "$CA_CERT_FILE" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d ':' | tr 'A-F' 'a-f')
+    else
+        echo -e "${YELLOW}[!] No $CA_CERT_FILE and no CA_FINGERPRINT – nodes will accept no Root CA. Start the centre first.${NC}"
+        return 0
+    fi
+    touch "$SCRIPT_DIR/.env"
+    sed -i '/^CA_FINGERPRINT=/d' "$SCRIPT_DIR/.env"
+    echo "CA_FINGERPRINT=$fp" >> "$SCRIPT_DIR/.env"
+    echo -e "${GREEN}[+] Root CA pinned: ${fp:0:16}...${NC}"
+}
+
+# csr <N>: edge client N generates a new key + request; the administrator approves it in the CA panel.
+request_cert() {
     local client
     client=$(require_client "$1")
-    shift
-    if [ $# -eq 0 ]; then
-        echo -e "${RED}[ERROR] Usage: ./client.sh cert-upload 1 node.pem node.key [ca.pem] [crl.der]${NC}"
+    echo -e "${BLUE}[*] $client: new key and certificate request (needs approval in the admin panel)...${NC}"
+    docker exec "$client" curl -s -X POST http://localhost:8000/api/certs/csr | python3 -m json.tool
+}
+
+# crl-upload <N> <file>: CRL delivered out of band (stored only if signed by the Root CA and newer).
+upload_crl() {
+    local client
+    client=$(require_client "$1")
+    if [ ! -f "$2" ]; then
+        echo -e "${RED}[ERROR] Usage: ./client.sh crl-upload 1 crl.der${NC}"
         exit 1
     fi
-    local form=() arg field path i=0
-    for arg in "$@"; do
-        if [[ "$arg" == *=* ]]; then
-            field="${arg%%=*}"
-            path="${arg#*=}"
-        else
-            field="files"  # plain file: the edge client recognises cert / key / CA / CRL by content
-            path="$arg"
-        fi
-        if [[ ! "$field" =~ ^(ca|cert|key|crl|files)$ ]] || [ ! -f "$path" ]; then
-            echo -e "${RED}[ERROR] Expected an existing file (optionally ca|cert|key|crl=<file>), got '$arg'.${NC}"
-            exit 1
-        fi
-        i=$((i + 1))
-        docker cp "$path" "$client:/tmp/upload_$i"
-        form+=(-F "$field=@/tmp/upload_$i")
-    done
-    echo -e "${BLUE}[*] Uploading ${*%%=*} to $client...${NC}"
-    docker exec "$client" curl -s -X POST http://localhost:8000/api/certs "${form[@]}" | python3 -m json.tool
-    docker exec "$client" sh -c 'rm -f /tmp/upload_*'
+    docker cp "$2" "$client:/tmp/upload_crl"
+    docker exec "$client" curl -s -X POST http://localhost:8000/api/certs/crl -F "crl=@/tmp/upload_crl" | python3 -m json.tool
+    docker exec "$client" rm -f /tmp/upload_crl
 }
 
 # cert-download <N> [out.pem]: download the certificate (no key) from edge client N.
@@ -440,6 +449,33 @@ show_app_pki() {
     done
 }
 
+# stats [N|all] [csv]: bytes sent/received by edge client(s), by kind of object and peer (transfers.py).
+show_stats() {
+    local targets
+    targets=$(resolve_targets "${1:-all}") || exit 1
+    for client in $targets; do
+        if [ "$2" = "csv" ]; then
+            docker exec "$client" curl -s "http://localhost:8000/api/stats/transfers?format=csv"
+            continue
+        fi
+        echo -e "\n${BLUE}=== TRANSFERS OF $client ===${NC}"
+        docker exec "$client" curl -s http://localhost:8000/api/stats/transfers | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+row = "{:<12} {:>6} {:>10} {:>10} {:>10}  {}"
+print(row.format("", "count", "payload", "wire", "saved", "statuses"))
+def show(name, v):
+    st = " ".join(f"{k[7:]}={n}" for k, n in sorted(v.items()) if k.startswith("status_"))
+    print(row.format(name, v["count"], v["payload_bytes"], v["wire_bytes"], v["saved_bytes"], st))
+for group in ("by_kind", "by_peer", "by_direction"):
+    print(f"-- {group[3:]}")
+    for name, v in s[group].items():
+        show(name, v)
+show("TOTAL", s["total"])
+' || true
+    done
+}
+
 call_custom_endpoint() {
     local client
     client=$(require_client "$1")
@@ -460,7 +496,8 @@ show_help() {
 ============================================================
 Initial radio links: client_1 --p2p_12-- client_2 --p2p_23-- client_3
 Neighbours are greeted once when a link comes up; messages and files go only to nodes in radio range.
-Each edge client holds one certificate; its edge app takes it and uses it only to authenticate.
+Each edge client holds one certificate: it generates the key itself, sends a CSR on WAN contact and installs
+the certificate once the administrator approves it in the CA panel. Its edge app uses it only to authenticate.
 
 Lifecycle and status:
   ./client.sh up [--offline|--online]  Start containers (background)
@@ -483,18 +520,23 @@ Endpoint execution:
   ./client.sh internet-test [1|2|3|all]  GET /api/internet/test (WAN RTT test)
   ./client.sh internet-check [1|2|3|all] GET /api/internet/check (socket diagnostics)
 
-P2P Communication:
-  ./client.sh msg 1 2 "Text"           Send P2P message from client_1 to client_2 (must be in radio range)
+P2P Communication (directly in radio range, otherwise store-and-forward via neighbours):
+  ./client.sh msg 1 3 "Text"           Send P2P message from client_1 to client_3
   ./client.sh inbox [1|2|3]            Display P2P inbox
-  ./client.sh send-file 1 2 <file>     Send file via P2P from client_1 to client_2 (in radio range)
+  ./client.sh send-file 1 3 <file>     Send file via P2P from client_1 to client_3
   ./client.sh files [1|2|3]            List received P2P files
+  ./client.sh queue [1|2|3|all]        Store-and-forward queue (items carried for nodes out of range)
+  ./client.sh contacts [1|2|3]         Latest contacts (WAN / neighbour) and results of their exchanges
+
+Measurements (bytes on WAN / radio links):
+  ./client.sh stats [1|2|3|all] [csv]  Transfers by kind, peer and direction (csv: every record)
+  ./client.sh stats-reset [1|2|3|all]  Clear the transfer register before a scenario
   ./client.sh call 1 <path>            Call custom endpoint
   ./client.sh logs [1|2|3]             Follow edge client uvicorn logs
 
-Certificates (held by the edge client, used by the edge app):
-  ./client.sh cert-upload 1 node.pem node.key [ca.pem] [crl.der]
-                                       Store in edge client 1 (files recognised by content);
-                                       a new certificate replaces the stored one
+Certificates (held by the edge client, obtained automatically, used by the edge app):
+  ./client.sh csr 1                    New key + certificate request (e.g. after a rejection)
+  ./client.sh crl-upload 1 crl.der     CRL delivered out of band (stored only if signed and newer)
   ./client.sh certs [1|2|3]            Certificate, Root CA and CRL held by the edge client
   ./client.sh cert-download 1 [f]      Download the certificate (PEM, no key)
   ./client.sh cert-check 1 [file]      Check the certificate (or a file) offline in edge client 1
@@ -508,6 +550,7 @@ EOF
 case "$1" in
     up)
         ensure_networks
+        pin_ca
         echo -e "${BLUE}[*] Building and starting containers (${CLIENTS[*]})...${NC}"
         docker compose -f "$COMPOSE_FILE" up -d --build
         if [ "$2" = "--online" ]; then
@@ -575,15 +618,31 @@ case "$1" in
     call)
         call_custom_endpoint "$2" "$3"
         ;;
+    queue)
+        run_endpoint /api/saf/queue "${2:-all}"
+        ;;
+    contacts)
+        docker exec "$(require_client "${2:-1}")" curl -s "http://localhost:8000/api/contact/events?limit=10" | python3 -m json.tool
+        ;;
+    stats)
+        show_stats "${2:-all}" "$3"
+        ;;
+    stats-reset)
+        for client in $(resolve_targets "${2:-all}"); do
+            docker exec "$client" curl -s -X DELETE http://localhost:8000/api/stats/transfers; echo
+        done
+        ;;
     status)
         show_status
         ;;
     logs)
         docker logs -f "$(require_client "${2:-1}")"
         ;;
-    cert-upload)
-        shift
-        upload_cert "$@"
+    csr)
+        request_cert "${2:-1}"
+        ;;
+    crl-upload)
+        upload_crl "$2" "$3"
         ;;
     certs)
         docker exec "$(require_client "${2:-1}")" curl -s http://localhost:8000/api/certs | python3 -m json.tool

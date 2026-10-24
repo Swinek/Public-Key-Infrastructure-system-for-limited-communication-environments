@@ -20,11 +20,40 @@ logger = logging.getLogger("pki_backend.store")
 CRL_REISSUE_HOURS = int(os.getenv("CRL_REISSUE_HOURS", "24"))
 CRL_CHECK_INTERVAL_SECONDS = int(os.getenv("CRL_CHECK_INTERVAL_SECONDS", "600"))
 
+# Kanał NOTIFY z numerem nowej CRL (ta sama nazwa w edge_client/backend/announce.py).
+CRL_NOTIFY_CHANNEL = "crl_issued"
+
 # Klucz blokady doradczej: serializuje nadawanie numerów CRL (dwa wystawienia naraz nie dostaną tego samego).
 _CRL_LOCK_KEY = 0x43524C  # "CRL"
 
 CRL_META_COLUMNS = """crl_number, ca_fingerprint, this_update, next_update, revoked_count,
                       length(crl_der) AS size_der, trigger, created_at"""
+
+
+# Wnioski CSR węzłów (Etap 3b). Portal może je tylko dodawać i czytać; decyzję podejmuje administrator w CA.
+# Wykonywane przy każdym starcie (init.sql działa tylko na pustej bazie), więc istniejąca baza też dostaje tabelę.
+CSR_SCHEMA = """
+CREATE TABLE IF NOT EXISTS csr_requests (
+    id SERIAL PRIMARY KEY,
+    node_id VARCHAR(50) NOT NULL,
+    key_fingerprint VARCHAR(64) UNIQUE NOT NULL,
+    csr_der BYTEA NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    reason VARCHAR(255),
+    certificate_id INT REFERENCES certificates(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    decided_at TIMESTAMPTZ
+);
+GRANT SELECT, INSERT ON csr_requests TO pki_portal;
+GRANT USAGE ON SEQUENCE csr_requests_id_seq TO pki_portal;
+"""
+
+# Kanał NOTIFY: wydano certyfikat na wniosek (payload = node_id) – portal budzi węzły, a te pobierają certyfikat.
+CERT_NOTIFY_CHANNEL = "cert_issued"
+
+
+async def ensure_csr_schema(conn: asyncpg.Connection) -> None:
+    await conn.execute(CSR_SCHEMA)
 
 
 async def register_ca_certificate(conn: asyncpg.Connection) -> str:
@@ -80,6 +109,9 @@ async def _issue_crl_locked(conn: asyncpg.Connection, trigger: str) -> dict:
         crl.public_bytes(serialization.Encoding.DER),
         trigger,
     )
+    # Impuls dla węzłów: portal (edge_client/backend/announce.py) nasłuchuje na tym kanale i od razu wyzwala
+    # kontakt WAN u węzłów, które mają internet. NOTIFY w transakcji dochodzi dopiero po jej zatwierdzeniu.
+    await conn.execute("SELECT pg_notify($1, $2)", CRL_NOTIFY_CHANNEL, str(crl_number))
     logger.info("Wystawiono CRL nr %d (%s, %d wpisów)", crl_number, trigger, len(crl))
     return dict(row)
 

@@ -89,28 +89,86 @@ function Feedback({ result }) {
   );
 }
 
-// One drop zone for every kind of file: the edge client recognises certificate, key, Root CA and CRL by content.
-// A new certificate + key replaces the stored one.
-function UploadCard({ onStored }) {
+const REQUEST_STYLES = {
+  NEW: "bg-slate-50 text-slate-600 border-slate-200",
+  PENDING: "bg-amber-50 text-amber-800 border-amber-200",
+  APPROVED: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  REJECTED: "bg-rose-50 text-rose-700 border-rose-200"
+};
+
+// The key is generated here and only the request (CSR) goes to the CA; the certificate arrives by itself on a WAN
+// contact once the administrator approves the request. No certificate, key or Root CA is uploaded by hand.
+function RequestCard({ store, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const request = store?.request;
+
+  const newRequest = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/certs/csr", { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        setResult({ ok: true, text: "New key generated – the request goes to the CA on the next WAN contact." });
+        onChanged(data.status);
+      } else {
+        setResult({ ok: false, text: errorText(data) });
+      }
+    } catch (err) {
+      setResult({ ok: false, text: `Connection error: ${err.message}` });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className={`${card} p-4 space-y-3`}>
+      <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+        <ShieldCheckIcon className="w-4 h-4 text-indigo-600" /> Certificate request
+      </h3>
+      {!store?.ca_pinned && (
+        <p className="text-[11px] text-rose-700">Root CA is not pinned (CA_FINGERPRINT) – the node accepts no CA.</p>
+      )}
+      {request ? (
+        <div className="space-y-1 text-[11px] text-slate-600">
+          <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
+            REQUEST_STYLES[request.status] || REQUEST_STYLES.NEW}`}>{request.status}</span>
+          <div className="font-mono break-all" title="SHA-256 of the public key">{request.key_fingerprint}</div>
+          <div>Created {fmtDate(request.created_at)}{request.reason ? ` – ${request.reason}` : ""}</div>
+        </div>
+      ) : (
+        <p className="text-[11px] text-slate-500">
+          No pending request. A request is filed automatically when the node has no valid certificate.
+        </p>
+      )}
+      <Feedback result={result} />
+      <button type="button" onClick={newRequest} disabled={busy} className={`${button} w-full`}>
+        {busy ? "Generating..." : "New key + request"}
+      </button>
+    </div>
+  );
+}
+
+// CRL delivered out of band (e.g. on a USB stick): stored only if signed by the Root CA and newer.
+function CrlUploadCard({ onStored }) {
   const inputRef = useRef(null);
-  const [files, setFiles] = useState([]);
+  const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
 
   const handleUpload = async (e) => {
     e.preventDefault();
     const formData = new FormData();
-    files.forEach((f) => formData.append("files", f));
+    formData.append("crl", file);
     setBusy(true);
     setResult(null);
     try {
-      const res = await fetch("/api/certs", { method: "POST", body: formData });
+      const res = await fetch("/api/certs/crl", { method: "POST", body: formData });
       const data = await res.json();
       if (res.ok) {
-        const stored = data.stored.length ? data.stored.join(", ") : "nothing new";
-        const replaced = data.replaced ? " (previous certificate replaced)" : "";
-        setResult({ ok: true, text: [`Stored: ${stored}${replaced}.`, ...data.warnings].join(" ") });
-        setFiles([]);
+        setResult({ ok: true, text: data.stored.length ? "CRL stored." : data.warnings.join(" ") });
+        setFile(null);
         if (inputRef.current) inputRef.current.value = "";
         onStored(data.status);
       } else {
@@ -126,20 +184,13 @@ function UploadCard({ onStored }) {
   return (
     <form onSubmit={handleUpload} className={`${card} p-4 space-y-3`}>
       <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-        <UploadIcon className="w-4 h-4 text-indigo-600" /> Upload
+        <UploadIcon className="w-4 h-4 text-indigo-600" /> CRL from removable media
       </h3>
-      <label className="relative block border-2 border-dashed border-slate-200 hover:border-indigo-300 rounded-lg px-3 py-4 text-center cursor-pointer">
-        <input ref={inputRef} type="file" multiple className="absolute inset-0 opacity-0 cursor-pointer"
-          onChange={(e) => setFiles([...e.target.files])} />
-        {files.length === 0 ? (
-          <span className="text-xs text-slate-500">Drop or choose: certificate + key, Root CA, CRL</span>
-        ) : (
-          <span className="text-xs text-slate-700 font-medium">{files.map((f) => f.name).join(", ")}</span>
-        )}
-      </label>
+      <input ref={inputRef} type="file" onChange={(e) => setFile(e.target.files[0] || null)}
+        className="w-full text-xs text-slate-600" />
       <Feedback result={result} />
-      <button type="submit" disabled={busy || files.length === 0} className={`${button} w-full`}>
-        {busy ? "Uploading..." : "Upload"}
+      <button type="submit" disabled={busy || !file} className={`${button} w-full`}>
+        {busy ? "Uploading..." : "Upload CRL"}
       </button>
     </form>
   );
@@ -223,14 +274,14 @@ function CertificateCard({ store }) {
         </div>
       </div>
       {!cert ? (
-        <p className="text-xs text-slate-400 py-10 text-center">No certificate yet – upload Root CA, certificate and key.</p>
+        <p className="text-xs text-slate-400 py-10 text-center">No certificate yet – it arrives once the CA approves the request.</p>
       ) : (
         <div className="p-4 space-y-4">
           <div className="grid grid-cols-2 gap-x-6 gap-y-3">
             <Field label="Subject">{cn(cert.subject)}</Field>
             <Field label="Serial" mono>{cert.serial_number}</Field>
             <Field label="Valid">{fmtDay(cert.not_before)} – {fmtDay(cert.not_after)}</Field>
-            <Field label="Uploaded">{fmtDate(cert.uploaded_at)}</Field>
+            <Field label="Installed">{fmtDate(cert.installed_at)}</Field>
           </div>
           <div className="flex items-center justify-between gap-4 pt-3 border-t border-slate-100">
             <span className="text-[11px] text-slate-500">{cert.verdict?.reason}</span>
@@ -256,7 +307,8 @@ function CertificatesPanel() {
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 items-start">
       <div className="lg:col-span-2"><CertificateCard store={store} /></div>
       <div className="space-y-5">
-        <UploadCard onStored={setStore} />
+        <RequestCard store={store} onChanged={setStore} />
+        <CrlUploadCard onStored={setStore} />
         <CheckCard />
       </div>
     </div>

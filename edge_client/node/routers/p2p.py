@@ -1,9 +1,10 @@
+"""Messages and files between edge clients: directly to a neighbour in radio range, otherwise store-and-forward
+(saf.py) - the item travels with neighbours and is delivered when a carrier meets the destination."""
 import hashlib
 import json
-import os
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -12,9 +13,13 @@ from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 
 import config
+import contact
 import neighbours
 import routing
+import saf
 import state
+import transfers
+import wire
 from models import MessagePayload, IncomingMessage
 
 router = APIRouter(prefix="/api/p2p", tags=["P2P Communication"])
@@ -110,9 +115,41 @@ def get_destinations():
     }
 
 
+def _queued(destination_id: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    return {**result, "status": "QUEUED", "recipient": destination_id,
+            "note": f"'{destination_id}' is not in radio range - the item travels with neighbours (store-and-forward)."}
+
+
+def _accept_transit(item: Dict[str, Any], content: Optional[bytes] = None) -> Dict[str, Any]:
+    """An item addressed to another node: keep it and hand it on by store-and-forward."""
+    try:
+        saf.validate(item, content)
+    except saf.SafError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    outcome, details = saf.accept(item, content)
+    if outcome == "queued":
+        contact.announce(f"saf-{item['msg_id'][:8]}", exclude=item["hops"][-1])
+    return {**details, "status": "DUPLICATE" if outcome == "duplicate" else "QUEUED", "msg_id": item["msg_id"],
+            "forwarded_by": config.NODE_ID}
+
+
+def _transit_item(kind: str, meta: Dict[str, Any], hops: List[str], sent_at: Optional[str] = None,
+                  **fields) -> Dict[str, Any]:
+    created = sent_at or datetime.now(timezone.utc).isoformat()
+    try:
+        start = datetime.fromisoformat(created.replace("Z", "+00:00"))
+    except ValueError:
+        start = datetime.now(timezone.utc)
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    return {"msg_id": meta["msg_id"], "type": kind, "origin_id": meta["origin_id"],
+            "origin_name": meta.get("origin_name"), "destination_id": meta["destination_id"], "hops": hops,
+            "created_at": start.isoformat(),
+            "expires_at": (start + timedelta(hours=config.SAF_TTL_HOURS)).isoformat(), **fields}
+
+
 def _relay_message(msg: Dict[str, Any]) -> Dict[str, Any]:
-    """Synchronously hands the message to the next hop towards msg['destination_id'].
-    Stage 3 (store-and-forward): this is the place to enqueue instead of failing when out of range."""
+    """Hands the message directly to msg['destination_id'], a neighbour in radio range."""
     next_hop = _next_hop_or_404(msg["destination_id"])
     try:
         resp = requests.post(
@@ -125,10 +162,12 @@ def _relay_message(msg: Dict[str, Any]) -> Dict[str, Any]:
         )
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"{next_hop['id']}: {_error_detail(resp)}")
+    transfers.record("msg", "out", next_hop["id"], len(msg["message"].encode()),
+                     wire.client_wire_bytes(resp, len(resp.content)), number=msg["msg_id"])
     return {"next_hop": next_hop, "response": resp.json()}
 
 
-@router.post("/send-message", summary="Send P2P message to a neighbour in radio range")
+@router.post("/send-message", summary="Send P2P message (directly if in radio range, otherwise store-and-forward)")
 def send_p2p_message(payload: MessagePayload):
     try:
         destination_id = routing.resolve_destination(payload.to)
@@ -136,6 +175,11 @@ def send_p2p_message(payload: MessagePayload):
         raise HTTPException(status_code=400, detail=str(e))
     if destination_id == config.NODE_ID:
         raise HTTPException(status_code=400, detail="Cannot send a message to this node itself.")
+    if len(payload.message) > saf.MAX_MESSAGE_CHARS:
+        raise HTTPException(status_code=413, detail=f"Message longer than {saf.MAX_MESSAGE_CHARS} characters.")
+    if neighbours.get(destination_id) is None:
+        item = saf.new_item("msg", destination_id, message=payload.message)
+        return _queued(destination_id, saf.enqueue_local(item))
 
     outgoing = IncomingMessage(
         sender_id=config.NODE_ID,
@@ -162,25 +206,20 @@ def send_p2p_message(payload: MessagePayload):
     }
 
 
-@router.post("/receive-message", summary="Receive P2P message (store locally or forward)")
+@router.post("/receive-message", summary="Receive P2P message (store locally or keep for store-and-forward)")
 def receive_p2p_message(msg: IncomingMessage):
     hops = list(msg.hops) or [msg.sender_id]
     _check_hops(hops)
     destination_id = msg.destination_id or config.NODE_ID
+    transfers.record("msg", "in", msg.sender_id, len(msg.message.encode()), number=msg.msg_id)
 
     if destination_id != config.NODE_ID:
-        forwarded = msg.model_dump()
-        forwarded.update({
-            "sender_id": config.NODE_ID,
-            "sender_name": config.NODE_NAME,
-            "destination_id": destination_id,
-            "hops": hops + [config.NODE_ID]
-        })
-        print(f"\n[P2P FORWARD] {msg.msg_id}: {hops} -> {config.NODE_ID} -> {destination_id}\n")
-        relayed = _relay_message(forwarded)
-        downstream = relayed["response"]
-        return {**downstream, "forwarded_by": config.NODE_ID}
+        meta = {"msg_id": msg.msg_id, "origin_id": msg.origin_id or msg.sender_id,
+                "origin_name": msg.origin_name or msg.sender_name, "destination_id": destination_id}
+        print(f"\n[P2P TRANSIT] {msg.msg_id}: {hops} -> {config.NODE_ID} -> {destination_id} (store-and-forward)\n")
+        return _accept_transit(_transit_item("msg", meta, hops, msg.sent_at, message=msg.message))
 
+    saf.mark_seen(msg.msg_id)
     entry, created = state.add_inbox_entry({
         "msg_id": msg.msg_id,
         "sender_id": msg.sender_id,
@@ -232,10 +271,12 @@ def _relay_file(filename: str, content: bytes, content_type: Optional[str], meta
         )
     if resp.status_code != 200:
         raise HTTPException(status_code=502, detail=f"{next_hop['id']}: {_error_detail(resp)}")
+    transfers.record("file", "out", next_hop["id"], len(content),
+                     wire.client_wire_bytes(resp, len(resp.content)), number=meta["msg_id"])
     return {"next_hop": next_hop, "response": resp.json()}
 
 
-@router.post("/send-file", summary="Send file via P2P to a neighbour in radio range")
+@router.post("/send-file", summary="Send file via P2P (directly if in radio range, otherwise store-and-forward)")
 async def send_file_to_peer(file: UploadFile = File(...), to: Optional[str] = Form(None)):
     try:
         destination_id = routing.resolve_destination(to)
@@ -245,6 +286,13 @@ async def send_file_to_peer(file: UploadFile = File(...), to: Optional[str] = Fo
         raise HTTPException(status_code=400, detail="Cannot send a file to this node itself.")
 
     content = await file.read()
+    if neighbours.get(destination_id) is None:
+        if len(content) > config.SAF_MAX_FILE_BYTES:
+            raise HTTPException(status_code=413, detail=f"Store-and-forward carries files up to {config.SAF_MAX_FILE_BYTES} B.")
+        item = saf.new_item("file", destination_id, filename=Path(file.filename or "file").name, content=content,
+                            content_type=file.content_type)
+        return _queued(destination_id, {**saf.enqueue_local(item, content), "filename": item["filename"],
+                                        "size_bytes": len(content), "sha256": item["sha256"]})
     meta = {
         "msg_id": uuid.uuid4().hex,
         "sender_id": config.NODE_ID,
@@ -297,33 +345,23 @@ async def receive_file(
         )
 
     destination_id = destination_id or config.NODE_ID
+    msg_id = msg_id or uuid.uuid4().hex
+    transfers.record("file", "in", sender_id, len(content), number=msg_id)
     if destination_id != config.NODE_ID:
-        # Transit: the file is not stored in this node's received_files.
-        meta = {
-            "msg_id": msg_id or uuid.uuid4().hex,
-            "sender_id": config.NODE_ID,
-            "sender_name": config.NODE_NAME,
-            "origin_id": origin_id or sender_id,
-            "origin_name": origin_name or sender_name,
-            "destination_id": destination_id,
-            "hops": hop_list + [config.NODE_ID],
-            "expected_sha256": actual_sha256
-        }
-        print(f"\n[P2P FORWARD FILE] '{file.filename}' ({len(content)} B): {hop_list} -> {config.NODE_ID} -> {destination_id}\n")
-        relayed = _relay_file(file.filename, content, file.content_type, meta)
-        return {**relayed["response"], "forwarded_by": config.NODE_ID}
+        # Transit: kept in the store-and-forward queue, not in this node's received_files.
+        meta = {"msg_id": msg_id, "origin_id": origin_id or sender_id, "origin_name": origin_name or sender_name,
+                "destination_id": destination_id}
+        print(f"\n[P2P TRANSIT FILE] '{file.filename}' ({len(content)} B): {hop_list} -> {config.NODE_ID} -> {destination_id}\n")
+        item = _transit_item("file", meta, hop_list, filename=Path(file.filename or "file").name,
+                             content_type=file.content_type, size=len(content), sha256=actual_sha256)
+        return _accept_transit(item, content)
 
-    safe_name = Path(file.filename).name
-    if not safe_name or safe_name.startswith("."):
+    try:
+        # Atomic write: an interrupted transfer never leaves a truncated file under the final name.
+        safe_name = state.save_received_file(file.filename or "", content)
+    except ValueError:
         raise HTTPException(status_code=422, detail="Invalid file name.")
-    save_path = config.STORAGE_DIR / safe_name
-    # Atomic write: an interrupted transfer never leaves a truncated file under the final name.
-    tmp_path = config.STORAGE_DIR / f".part-{uuid.uuid4().hex}"
-    with open(tmp_path, "wb") as f:
-        f.write(content)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, save_path)
+    saf.mark_seen(msg_id)
 
     route = hop_list + [config.NODE_ID]
     print(f"\n[FILE TRANSFER COMPLETED] File '{safe_name}' ({len(content)} B) from {origin_name or sender_name}, route: {' -> '.join(route)}.\n")

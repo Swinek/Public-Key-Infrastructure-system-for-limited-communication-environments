@@ -12,6 +12,10 @@ class CertificateCreate(BaseModel):
     userId: int
 
 
+class CsrDecision(BaseModel):
+    reason: Optional[str] = None
+
+
 class CertificateRevoke(BaseModel):
     certId: int
     reason: Optional[str] = None

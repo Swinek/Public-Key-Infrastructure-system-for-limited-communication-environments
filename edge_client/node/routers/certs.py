@@ -1,11 +1,17 @@
-"""The certificate held by the edge client: upload (replaces the previous one), show, download, check offline.
+"""The certificate held by the edge client: show, download, check offline, hand to this node's edge app.
 
-The edge app of this node takes it from here (GET /api/certs/bundle, diagram arrow "cert") and uses it only
-to authenticate communication. The bundle contains the private key, so it is served only to the edge app.
+There is no upload of a certificate, a private key or a Root CA: the key is generated here and the certificate
+comes from the CA after the administrator approves the node's request (enroll.py); the Root CA is pinned at
+deployment (CA_FINGERPRINT) and fetched by pki_sync.py. Two manual actions remain:
+    POST /api/certs/csr   new key + request (e.g. after a rejection) - the certificate still needs the CA's approval
+    POST /api/certs/crl   CRL delivered out of band (e.g. on a USB stick) - stored only if signed by the CA and newer
+
+The edge app of this node takes the certificate from here (GET /api/certs/bundle, diagram arrow "cert") and uses it
+only to authenticate communication. The bundle contains the private key, so it is served only to the edge app.
 """
 import socket
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -13,10 +19,12 @@ from fastapi.responses import Response
 
 import certs
 import config
+import contact
+import enroll
 
 router = APIRouter(prefix="/api/certs", tags=["Certificates (edge client)"])
 
-# A certificate, key or CRL of this PKI is a few KB; anything far larger is not a PKI object.
+# A certificate or CRL of this PKI is a few KB; anything far larger is not a PKI object.
 MAX_OBJECT_BYTES = 256 * 1024
 
 
@@ -40,65 +48,41 @@ def is_edge_app(host: Optional[str]) -> bool:
         return False
 
 
-@router.get("", summary="Certificate (metadata + offline verdict), Root CA and CRL held by this edge client")
-def list_certificates():
-    return {"node_id": config.NODE_ID, **certs.get_store().status()}
-
-
-async def _classified(files: List[UploadFile]) -> Dict[str, bytes]:
-    """Files of unknown kind, sorted by content into ca / cert / key / crl (at most one of each)."""
-    found: Dict[str, bytes] = {}
-    for upload in files:
-        name = upload.filename or "plik"
-        data = await _read(upload, name)
-        try:
-            kind = certs.classify(data)
-        except certs.CertStoreError:
-            raise HTTPException(status_code=400, detail=f"Nie rozpoznano pliku '{name}' (oczekiwany certyfikat, klucz lub CRL).")
-        if kind in found:
-            raise HTTPException(status_code=400, detail=f"Dwa pliki tego samego rodzaju ({kind}) – wgraj jeden.")
-        found[kind] = data
-    return found
-
-
-@router.post("", summary="Upload Root CA, the certificate + key (replaces the previous one) and/or a CRL")
-async def upload_certificate(
-    files: List[UploadFile] = File([], description="Any of the files below in any order - recognised by content"),
-    ca: Optional[UploadFile] = File(None, description="Root CA certificate (PEM/DER), needed before the first certificate"),
-    cert: Optional[UploadFile] = File(None, description="Certificate (PEM/DER) issued by the Root CA"),
-    key: Optional[UploadFile] = File(None, description="Its private key (PEM, unencrypted), together with cert"),
-    crl: Optional[UploadFile] = File(None, description="CRL (PEM/DER) signed by the Root CA, stored only if newer"),
-):
-    found = await _classified(files)
-    ca_data = await _read(ca, "ca") or found.get("ca")
-    cert_data = await _read(cert, "cert") or found.get("cert")
-    key_data = await _read(key, "key") or found.get("key")
-    crl_data = await _read(crl, "crl") or found.get("crl")
-    if not any((ca_data, cert_data, key_data, crl_data)):
-        raise HTTPException(status_code=400, detail="Brak danych: podaj co najmniej jedno z pól ca, cert+key, crl.")
-    if (cert_data is None) != (key_data is None):
-        raise HTTPException(status_code=400, detail="Certyfikat i klucz prywatny wgrywa się razem.")
-
+def _status():
     store = certs.get_store()
-    stored, warnings, replaced = [], [], False
-    try:
-        # Order matters: the certificate and the CRL are checked against the (newly) stored CA.
-        if ca_data is not None:
-            if store.set_ca(ca_data):
-                stored.append("ca")
-        if cert_data is not None:
-            replaced = store.set_certificate(cert_data, key_data)
-            stored.append("cert")
-        if crl_data is not None:
-            if store.update_crl(crl_data):
-                stored.append("crl")
-            else:
-                warnings.append("CRL pominięta: Edge client ma już tę samą lub nowszą listę.")
-    except certs.CertStoreError as exc:
-        raise HTTPException(status_code=400, detail={"error": str(exc), "stored": stored})
+    pending = store.pending()
+    return {
+        "node_id": config.NODE_ID,
+        "ca_pinned": bool(config.CA_FINGERPRINT),
+        **store.status(),
+        "request": None if pending is None else {k: v for k, v in pending.items() if k != "csr_der"},
+    }
 
-    print(f"[CERTS] Stored: {', '.join(stored) or 'nothing new'}" + (" (previous certificate replaced)" if replaced else ""))
-    return {"stored": stored, "replaced": replaced, "warnings": warnings, "status": list_certificates()}
+
+@router.get("", summary="Certificate (metadata + offline verdict), pending request, Root CA and CRL")
+def list_certificates():
+    return _status()
+
+
+@router.post("/csr", summary="New key + certificate request (sent to the CA on the next WAN contact)")
+def new_request():
+    request = enroll.request_now()
+    print(f"[CERTS] New key and CSR requested by the operator ({request['key_fingerprint'][:16]}...)")
+    return {"request": request, "status": _status()}
+
+
+@router.post("/crl", summary="Store a CRL delivered out of band (only if signed by the Root CA and newer)")
+async def upload_crl(crl: UploadFile = File(..., description="CRL (PEM/DER) signed by the Root CA")):
+    data = await _read(crl, "crl")
+    try:
+        stored = certs.get_store().update_crl(data)
+    except certs.CertStoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if stored:
+        print("[CERTS] CRL stored from an out-of-band upload")
+        contact.announce("pki-upload")  # neighbours pull the new CRL from here (pki_sync.py)
+    warnings = [] if stored else ["CRL pominięta: Edge client ma już tę samą lub nowszą listę."]
+    return {"stored": ["crl"] if stored else [], "warnings": warnings, "status": _status()}
 
 
 def _parse_at(at: Optional[str]) -> datetime:

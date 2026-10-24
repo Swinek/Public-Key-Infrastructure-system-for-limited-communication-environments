@@ -65,11 +65,16 @@ class TestCA:
               not_after: datetime = NOW + 365 * DAY, serial: Optional[int] = None):
         """Zwraca (certyfikat, klucz prywatny) węzła."""
         key = ec.generate_private_key(ec.SECP256R1())
-        cert = (
+        return self.issue_for(key.public_key(), cn, not_before, not_after, serial), key
+
+    def issue_for(self, public_key, cn: str = "client_1", not_before: datetime = NOW - DAY,
+                  not_after: datetime = NOW + 365 * DAY, serial: Optional[int] = None) -> x509.Certificate:
+        """Certyfikat na podany klucz publiczny (jak CA po zatwierdzeniu wniosku CSR)."""
+        return (
             x509.CertificateBuilder()
             .subject_name(_name(cn))
             .issuer_name(self.cert.subject)
-            .public_key(key.public_key())
+            .public_key(public_key)
             .serial_number(serial or x509.random_serial_number())
             .not_valid_before(not_before)
             .not_valid_after(not_after)
@@ -79,10 +84,9 @@ class TestCA:
                 data_encipherment=False, key_agreement=True, key_cert_sign=False, crl_sign=False,
                 encipher_only=False, decipher_only=False), critical=True)
             .add_extension(self._aki(), critical=False)
-            .add_extension(x509.SubjectKeyIdentifier.from_public_key(key.public_key()), critical=False)
+            .add_extension(x509.SubjectKeyIdentifier.from_public_key(public_key), critical=False)
             .sign(self.key, hashes.SHA256())
         )
-        return cert, key
 
     def crl(self, revoked: Iterable[x509.Certificate] = (), number: Optional[int] = 1,
             this_update: datetime = NOW - DAY, next_update: datetime = NOW + DAY,

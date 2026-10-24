@@ -1,8 +1,10 @@
 import socket
 import time
 from datetime import datetime, timezone
+from typing import Optional
+
 import requests
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
 import config
@@ -39,9 +41,13 @@ def get_status():
     }
 
 
-@router.post("/api/neighbours/discover", summary="Send one hello on every radio link (called by `client.sh link up`)")
-def discover_neighbours():
-    sent_on = neighbours.discover()
+@router.post("/api/neighbours/discover",
+             summary="Send one hello on every radio link or only on ?network= (called by `client.sh link up`)")
+def discover_neighbours(network: Optional[str] = None):
+    try:
+        sent_on = neighbours.discover(network)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid network '{network}' (expected CIDR).")
     return {"node_id": config.NODE_ID, "hello_sent_on": sent_on}
 
 

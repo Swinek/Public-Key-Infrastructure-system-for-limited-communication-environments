@@ -9,6 +9,7 @@ import logging
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
+import announce
 from database import get_pool, record_to_dict, records_to_list
 from store import latest_ca, latest_crl, pem_to_der, pki_object_response
 
@@ -20,8 +21,11 @@ FORMAT = Query("der", pattern="^(der|pem)$")
 
 
 @router.get("/summary")
-async def get_summary():
-    """Numery wersji i rozmiary obiektów PKI - węzeł porównuje je z lokalnymi przed pobraniem."""
+async def get_summary(request: Request):
+    """Numery wersji i rozmiary obiektów PKI - węzeł porównuje je z lokalnymi przed pobraniem.
+
+    Edge client, który tu przychodzi, ma internet: dostanie impuls przy następnej CRL (announce.py)."""
+    announce.remember(request)
     pool = get_pool()
     async with pool.acquire() as conn:
         ca = await latest_ca(conn)
@@ -48,6 +52,12 @@ async def get_summary():
         },
         "certs": record_to_dict(certs),
     }
+
+
+@router.get("/online")
+async def get_online_nodes():
+    """Węzły, które teraz dostaną impuls o nowej CRL (ostatnio pobierały dane przez WAN)."""
+    return {"nodes": announce.online()}
 
 
 @router.get("/ca")

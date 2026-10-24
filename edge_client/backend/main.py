@@ -1,11 +1,13 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from database import close_db, init_db
-from routers import certificates, health, pki, users
+import announce
+from database import DATABASE_URL, close_db, init_db
+from routers import certificates, csr, health, pki, users
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,8 +21,11 @@ async def lifespan(app: FastAPI):
     """Lifespan context manager for DB pool startup and shutdown."""
     logger.info("Starting PKI Client/Node Backend with FastAPI...")
     await init_db()
+    # Nowa CRL w bazie -> impuls do węzłów online (announce.py), bez odpytywania przez węzły.
+    listener = asyncio.create_task(announce.listen(DATABASE_URL))
     yield
     logger.info("Shutting down PKI Client Backend...")
+    listener.cancel()
     await close_db()
 
 
@@ -43,6 +48,7 @@ app.include_router(users.router, prefix="/api")
 app.include_router(certificates.router, prefix="/api")
 app.include_router(health.router, prefix="/api")
 app.include_router(pki.router)  # /pki/* - API dla węzłów brzegowych (bez prefiksu /api)
+app.include_router(csr.router)  # /pki/csr - wnioski CSR węzłów (jedyny zapis portalu w bazie)
 
 
 @app.get("/", tags=["System"])

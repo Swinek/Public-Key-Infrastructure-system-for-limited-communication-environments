@@ -53,9 +53,13 @@ projekt_inzynierski/
 │   └── node/                    # Edge client N na węźle (kontenery client_1..3, UI :3011–3013)
 │       ├── client_node.py       # Aplikacja FastAPI Edge clienta
 │       ├── neighbours.py        # Sąsiedzi radiowi: jednorazowe hello przy zestawieniu łącza
-│       ├── routing.py           # Dostarczanie tylko do sąsiadów w zasięgu
+│       ├── routing.py           # Bezpośrednie dostarczanie do sąsiadów w zasięgu
+│       ├── contact.py           # Wyzwalacze kontaktu (internet on, hello, announce) – bez timerów
+│       ├── pki_sync.py          # Synchronizacja CRL / Root CA z portalem i sąsiadami (summary → tylko nowsze)
+│       ├── saf.py               # Store-and-forward wiadomości i plików do węzłów poza zasięgiem
+│       ├── transfers.py, wire.py # Rejestr przesłanych bajtów (payload / wire) i HTTP z limitem rozmiaru
 │       ├── certs.py             # Magazyn: jeden certyfikat węzła (+ klucz), Root CA i CRL
-│       ├── routers/             # certs.py – wgranie, pobranie, sprawdzenie, pakiet dla Edge app; P2P; diagnostyka WAN
+│       ├── routers/             # certs, pki (/pki/* dla sąsiadów), saf, stats, contact, p2p, diagnostyka WAN
 │       └── static/              # Konsola Edge clienta
 │
 ├── edge_app/                    # „Edge app” z diagramu: tylko użycie certyfikatu (kontenery app_1..3, UI :8001–8003)
@@ -131,7 +135,7 @@ podłączony na stałe, a Edge clienty – tylko po `./client.sh internet on`. E
 | **Backend Edge client (API)** | [http://localhost:5001/docs](http://localhost:5001/docs) | `pki-edge-client-backend` | Publikacja CA, CRL i certyfikatów dla węzłów przez WAN (tylko odczyt bazy, bez klucza CA!) |
 | **Baza Danych PostgreSQL** | `localhost:5433` (wewn. `5432`) | `pki-db` | Relacyjny magazyn węzłów i certyfikatów |
 | **Edge app 1–3** | [http://localhost:8001](http://localhost:8001), `:8002`, `:8003` (Swagger: `/docs`) | `app_1..3` | Przykładowa aplikacja: pobiera certyfikat od Edge clienta i uwierzytelnia się z inną Edge app |
-| **Edge client 1–3 (węzły)** | [http://localhost:3011](http://localhost:3011), `:3012`, `:3013` (Swagger: `/docs`) | `client_1..3` | Wersje certyfikatu (wgranie, pobranie), łącze WAN, łącza radiowe P2P |
+| **Edge client 1–3 (węzły)** | [http://localhost:3011](http://localhost:3011), `:3012`, `:3013` (Swagger: `/docs`) | `client_1..3` | Certyfikat węzła (automatyczny wniosek CSR, podgląd, pobranie), łącze WAN, łącza radiowe P2P |
 
 ---
 
@@ -139,8 +143,12 @@ podłączony na stałe, a Edge clienty – tylko po `./client.sh internet on`. E
 
 Węzeł N to para kontenerów z diagramu:
 
-- **Edge client N** (`client_N`) – **przechowuje jeden certyfikat węzła** z kluczem. Wgranie nowego zastępuje
-  poprzedni; certyfikat można pobrać (PEM, bez klucza). Trzyma też Root CA i najnowszą CRL i **w każdej chwili
+- **Edge client N** (`client_N`) – **przechowuje jeden certyfikat węzła** z kluczem i **zdobywa go sam**: generuje
+  klucz EC P-256 (nie opuszcza węzła), przy kontakcie WAN wysyła wniosek CSR, a po zatwierdzeniu w panelu CA
+  (zakładka *„Wnioski CSR”*) pobiera i instaluje certyfikat, który zastępuje poprzedni. Nowy wniosek idzie sam, gdy
+  certyfikatu brak, jest odwołany albo kończy się za `RENEW_BEFORE_DAYS` dni; po odrzuceniu – tylko na żądanie
+  (`client.sh csr N`). Nie ma wgrywania certyfikatu, klucza ani Root CA: Root CA jest przypięty przy wdrożeniu
+  (`CA_FINGERPRINT` w `.env`, zapisuje go `client.sh up`) i pobierany z portalu. Certyfikat można pobrać (PEM, bez klucza). Trzyma też Root CA i najnowszą CRL i **w każdej chwili
   sprawdza offline** swój certyfikat albo dowolny inny
   (łańcuch do Root CA, ważność, status w CRL – ten sam weryfikator co Edge app, `edge_app/pki`, dołączany do obrazu
   przy budowaniu). Poza tym: łącze WAN do centrum, łącza radiowe P2P, wiadomości i pliki. Niczego nie podpisuje.
@@ -152,7 +160,8 @@ Węzeł N to para kontenerów z diagramu:
   ostatnio pobranej kopii. Nie ma WAN ani P2P.
 
 ```bash
-./client.sh cert-upload 1 node.pem node.key ca.pem crl.der   # certyfikat Edge client 1 (zastępuje poprzedni; pliki rozpoznawane po treści)
+./client.sh csr 1                         # nowy klucz + wniosek (np. po odrzuceniu); zatwierdza administrator
+./client.sh crl-upload 1 crl.der          # CRL z nośnika (tylko podpisana przez CA i nowsza)
 ./client.sh certs 1                       # certyfikat, Root CA i CRL w Edge client 1
 ./client.sh cert-download 1 [plik.pem]    # pobranie certyfikatu (PEM, bez klucza)
 ./client.sh cert-check 1 [plik]           # sprawdzenie offline w Edge client 1 (domyślnie jego certyfikat)
@@ -174,15 +183,41 @@ więc nie tworzy mostu między nimi.
 początkowych – przy starcie węzła) każdy węzeł wysyła **jeden** pakiet UDP hello (broadcast, port `HELLO_PORT`
 8999: id, nazwa, port), a sąsiad odpowiada **jednym** hello-ack. Potem po łączu nie krąży nic (brak
 okresowych beaconów i pingów). Sąsiad pozostaje sąsiadem, dopóki istnieje łącze: po `link down` węzeł traci
-interfejs, więc wpis znika od razu – sprawdzane lokalnie, bez ruchu radiowego. Wiadomości i pliki trafiają
-**tylko do węzłów w zasięgu**; do pozostałych węzeł zwraca „not in radio range”. Dostarczanie przez
-pośredników (store-and-forward) to Etap 3. Hello nie jest uwierzytelniane – mówi tylko, kto jest na łączu.
+interfejs, więc wpis znika od razu – sprawdzane lokalnie, bez ruchu radiowego. Wiadomość lub plik do
+sąsiada w zasięgu idzie bezpośrednio; do węzła poza zasięgiem trafia do kolejki **store-and-forward** (status
+`QUEUED`) i wędruje z sąsiadami. Hello nie jest uwierzytelniane – mówi tylko, kto jest na łączu.
+
+**Wymiana danych tylko przy kontakcie** (`edge_client/node/contact.py`, bez timerów i odpytywania). Kontakt to:
+**wydanie nowej CRL w CA** (CA wysyła `pg_notify`, portal – `edge_client/backend/announce.py` – od razu budzi
+węzły, które mają internet: `POST /api/contact/wan`), `internet on` (portal), odebrane hello / hello-ack (sąsiad)
+oraz `announce` – krótka informacja od sąsiada, że ma nowe dane. Przy `link up a b` hello wysyła tylko węzeł a i tylko na nowym łączu, więc każda strona wymienia dane
+z drugą dokładnie raz. Przy każdym kontakcie węzeł **sam pobiera** od drugiej strony:
+
+1. **PKI** (`pki_sync.py`): `GET /pki/summary`, potem tylko brakujący obiekt – CRL o wyższym `CRLNumber`, Root CA
+   gdy go nie ma. Edge client udostępnia sąsiadom te same `/pki/summary|ca|crl` co portal, więc to jeden kod dla
+   WAN i radia. Przed zapisem: podpis CA, issuer, rosnący numer (`certs.update_crl`); pobieranie przerywane po
+   przekroczeniu rozmiaru z `summary` (niezaufany) i `MAX_PKI_OBJECT_BYTES`. Nowa CRL jest ogłaszana pozostałym
+   sąsiadom (`announce`), więc dociera łańcuchem 1 → 2 → 3. Root CA od sąsiada tylko przy przypiętym
+   `CA_FINGERPRINT` – od portalu i od sąsiada; bez przypięcia węzeł nie przyjmie żadnego CA.
+2. **Store-and-forward** (`saf.py`, wariant epidemiczny): `POST /api/saf/offer` z listą znanych `msg_id`
+   (16 znaków hex), w odpowiedzi tylko brakujące elementy; plik osobno, ze sprawdzeniem rozmiaru i SHA-256. Każdy
+   węzeł trzyma kopię do `SAF_TTL_HOURS` (TTL liczone od utworzenia, pośrednik nie może go przedłużyć), limit
+   skoków `P2P_MAX_HOPS`, pętle odrzucane. Adresat dostarcza element do skrzynki / `received_files`.
+
+Każde wysłanie i odbiór jest zapisywane w rejestrze (`transfers.py`, `DATA_DIR/transfers.jsonl`): rodzaj
+(`summary`, `crl_full`, `ca_cert`, `msg`, `file`, `saf_offer`, `announce`), kierunek, sąsiad, `payload_bytes`
+(sam obiekt), `wire_bytes` (żądanie + odpowiedź HTTP z nagłówkami), status (`ok`, `skipped` – nie wysłano, bo
+druga strona już miała, z `saved_bytes`; `rejected`; `aborted`). Podgląd: `./client.sh stats`,
+`GET /api/stats/transfers` (`?format=csv`).
 
 Konfiguracja Edge clienta (zmienne środowiskowe, wartości domyślne w `edge_client/node/config.py`):
 - `NODE_ID`, `NODE_NAME` – identyfikator (= CN certyfikatu węzła) i nazwa (Edge client #N),
 - `P2P_CIDR`, `HELLO_PORT` – zakres adresów łączy radiowych i port hello,
-- `DATA_DIR` – trwałe dane (wolumen `edge_client_N_data`): `inbox.json`, `received_files/`,
-- `PORTAL_URL` – adres portalu klienta w sieci `internet_net` (Etap 3),
+- `DATA_DIR` – trwałe dane (wolumen `edge_client_N_data`): `inbox.json`, `received_files/`, `certs/`, `saf/`,
+  `transfers.jsonl`,
+- `PORTAL_URL` – adres portalu klienta w sieci `internet_net` (kontakt WAN),
+- `CA_FINGERPRINT` – przypięty Root CA (SHA-256 hex); bez niego CA tylko z portalu lub ręcznie,
+- `MAX_PKI_OBJECT_BYTES`, `SAF_TTL_HOURS`, `SAF_MAX_FILE_BYTES`, `P2P_MAX_HOPS` – limity wymiany,
 - `EDGE_APP_URL` – Edge app tego węzła (`http://app_N:8000`, sieć `mgmt_N`).
 
 Konfiguracja Edge app (`edge_app/config.py`): `NODE_ID` (CN certyfikatu), `APP_ID` (`app_N`), `DATA_DIR`
@@ -191,13 +226,27 @@ Konfiguracja Edge app (`edge_app/config.py`): `NODE_ID` (CN certyfikatu), `APP_I
 Wiadomości mają `msg_id`, nadawcę pierwotnego i listę `hops`. Węzeł odrzuca wiadomość, która już przez niego
 przeszła (pętla), a pliki są sprawdzane sumą SHA-256 na każdym skoku.
 
+Przykład (CRL i wiadomość docierają do odciętego węzła 3 przez węzeł 2):
+
+```bash
+./client.sh link down 2 3; ./client.sh stats-reset
+./client.sh internet on 1                 # client_1 ma internet (portal zapamiętuje go jako online)
+curl -X POST localhost:5000/api/pki/crl   # nowa CRL (albo odwołanie w panelu): impuls → client_1 pobiera,
+                                          # announce → client_2 pobiera od 1 – bez żadnej komendy
+./client.sh msg 1 3 "dla 3"               # QUEUED: kopia u client_1 i client_2
+./client.sh link up 2 3                   # client_3 pobiera CRL i wiadomość od client_2
+./client.sh inbox 3; ./client.sh stats
+```
+
 ```bash
 ./client.sh status | links                # status węzłów i łączy radiowych
 ./client.sh internet on|off [1|2|3|all]   # łącze WAN (sieć internet_net, dostęp do portalu PKI)
 ./client.sh link down|up 1 2              # zerwanie / przywrócenie łącza radiowego 1↔2
 ./client.sh link up 1 3                   # nowe łącze 1↔3 (sieć p2p_13 tworzona na żądanie)
-./client.sh msg 1 2 "tekst"               # wiadomość 1 → 2 (odbiorca musi być w zasięgu)
-./client.sh send-file 1 2 plik.txt        # plik 1 → 2
+./client.sh msg 1 3 "tekst"               # wiadomość 1 → 3 (w zasięgu bezpośrednio, inaczej store-and-forward)
+./client.sh send-file 1 3 plik.txt        # plik 1 → 3
+./client.sh queue [N] | contacts N        # kolejka store-and-forward / ostatnie kontakty i wynik wymian
+./client.sh stats [N] [csv] | stats-reset # bajty przesłane WAN/P2P wg rodzaju i sąsiada
 ./client.sh inbox 3 | files 3             # skrzynka / odebrane pliki węzła 3
 ./client.sh p2p-test [N]                  # test łączy do wszystkich sąsiadów
 ```
@@ -228,12 +277,15 @@ Aplikacja została zaprojektowana z myślą o czytelnej demonstracji działania 
 2. **Rejestracja nowego węzła:**
    * Węzły dodaje się z poziomu kodu, a nie z panelu: dane startowe w `admin/backend/init.sql`
      albo `POST /api/users` (np. ze Swaggera CA lub ze skryptu).
-3. **Wydanie certyfikatu X.509:**
-   * Kliknij przycisk **„Issue Certificate”** przy utworzonym użytkowniku.
-   * System wygeneruje klucz ECDSA P-256, podpisze certyfikat kluczem Root CA (z AKI/SKI/KeyUsage) i zwróci certyfikat wraz z jednorazowym kluczem prywatnym.
-4. **Wgranie certyfikatu do Edge clienta:**
-   * W panelu Edge clienta (:3011–3013, zakładka *„Certificates”*) wgraj certyfikat z kluczem (oraz raz Root CA
-     i CRL) – certyfikat jest od razu sprawdzany offline.
+3. **Certyfikat węzła (wniosek CSR):**
+   * Edge client bez ważnego certyfikatu sam generuje klucz i przy kontakcie WAN wysyła wniosek – pojawia się on
+     w zakładce **„Wnioski CSR”**. **„Zatwierdź”** podpisuje certyfikat na klucz z wniosku (klucz prywatny nie
+     opuszcza węzła), odwołuje poprzedni certyfikat węzła (nowa CRL) i budzi węzeł, który od razu instaluje nowy.
+     **„Odrzuć”** kończy wniosek – węzeł nie wysyła go ponownie sam.
+   * Przycisk **„Issue Certificate”** (klucz generowany w CA) został tylko dla skryptów demonstracyjnych w `scripts/`.
+4. **Podgląd w Edge clientcie:**
+   * W panelu Edge clienta (:3011–3013, zakładka *„Certificates”*) widać certyfikat z wynikiem weryfikacji offline,
+     stan wniosku, przycisk „New key + request” i awaryjne wgranie samej CRL.
 5. **Unieważnienie certyfikatu (CRL):**
    * Wybierz **„Revoke”** przy aktywnym użytkowniku, podaj przyczynę (np. *„Key Compromise / Token lost”*) i zatwierdź.
    * Certyfikat natychmiast zmienia status na `Revoked (CRL)` z zapisanym powodem i datą wycofania,
@@ -250,6 +302,9 @@ Aplikacja została zaprojektowana z myślą o czytelnej demonstracji działania 
 | `DELETE`| `/api/users/{id}` | Usunięcie węzła: aktywny certyfikat zostaje odwołany (nowa CRL), wpisy certyfikatów zostają w rejestrze |
 | `GET` | `/api/certificates` | Pobranie rejestru wszystkich certyfikatów (PEM, fingerprint, daty ważności, status) |
 | `POST` | `/api/certificates` | Wystawienie certyfikatu X.509 podpisanego przez Root CA (zwraca certyfikat i klucz prywatny) |
+| `GET` | `/api/csr` | (CA) Wnioski CSR węzłów (`?status=PENDING`) |
+| `POST` | `/api/csr/{id}/approve`, `/api/csr/{id}/reject` | (CA) Zatwierdzenie (certyfikat na klucz z wniosku, poprzedni odwołany) / odrzucenie |
+| `POST` | `/pki/csr`; `GET` `/pki/csr/{odcisk klucza}` | (portal) Przyjęcie wniosku CSR od węzła / jego status i numer seryjny certyfikatu |
 | `POST` | `/api/certificates/revoke` | Unieważnienie certyfikatu i podpisanie nowej CRL (zwraca `crl_number`) |
 | `GET` | `/api/certificates/ca/download` | Pobranie certyfikatu Root CA (`ca_certificate.pem`) do instalacji na węzłach polowych |
 | `GET` | `/api/certificates/crl/download` | Pobranie ostatniej zapisanej CRL (`?format=pem` domyślnie, `der`) – nie podpisuje nowej |
@@ -257,6 +312,12 @@ Aplikacja została zaprojektowana z myślą o czytelnej demonstracji działania 
 | `POST` | `/api/pki/crl` | (CA) Ręczne podpisanie nowej CRL |
 | `GET` | `/pki/summary` | (portal) Numer i rozmiary CRL, fingerprint CA, liczba certyfikatów – węzeł porównuje przed pobraniem |
 | `GET` | `/pki/ca`, `/pki/crl`, `/pki/certs`, `/pki/certs/{serial}` | (portal) Obiekty PKI w DER (`?format=pem`), ETag → 304 dla aktualnej wersji |
+| `GET` | `/pki/online` | (portal) Węzły, które dostaną impuls o nowej CRL |
+| `GET` | `/pki/summary`, `/pki/ca`, `/pki/crl` | (Edge client) Te same obiekty dla sąsiadów – oryginały podpisane przez CA |
+| `POST` | `/api/contact/wan`, `/api/contact/announce` | (Edge client) Kontakt z portalem (`internet on`) / sąsiad ma nowe dane |
+| `GET` | `/api/contact/events` | (Edge client) Ostatnie kontakty i wynik wymian |
+| `POST` | `/api/saf/offer`; `GET` `/api/saf/items/{id}/content`, `/api/saf/queue` | (Edge client) Store-and-forward |
+| `GET`/`DELETE` | `/api/stats/transfers` | (Edge client) Rejestr przesłanych bajtów (`?format=csv`) / wyczyszczenie |
 | `GET` | `/api/health` | Status działania serwera backendowego |
 | `GET` | `/docs` | Interaktywna dokumentacja Swagger UI |
 

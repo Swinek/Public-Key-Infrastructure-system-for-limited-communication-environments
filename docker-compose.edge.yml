@@ -44,6 +44,7 @@ services:
       DATA_DIR: "/app/data"
       PORTAL_URL: "http://pki-edge-client-backend:5001"
       EDGE_APP_URL: "http://app_1:8000"
+      CA_FINGERPRINT: "${CA_FINGERPRINT:-}"  # przypięty Root CA (client.sh up -> .env)
     volumes:
       - ./edge_client/node/static:/app/static:ro
       - client_1_data:/app/data
@@ -63,6 +64,7 @@ services:
       DATA_DIR: "/app/data"
       PORTAL_URL: "http://pki-edge-client-backend:5001"
       EDGE_APP_URL: "http://app_2:8000"
+      CA_FINGERPRINT: "${CA_FINGERPRINT:-}"  # przypięty Root CA (client.sh up -> .env)
     volumes:
       - ./edge_client/node/static:/app/static:ro
       - client_2_data:/app/data
@@ -84,6 +86,7 @@ services:
       DATA_DIR: "/app/data"
       PORTAL_URL: "http://pki-edge-client-backend:5001"
       EDGE_APP_URL: "http://app_3:8000"
+      CA_FINGERPRINT: "${CA_FINGERPRINT:-}"  # przypięty Root CA (client.sh up -> .env)
     volumes:
       - ./edge_client/node/static:/app/static:ro
       - client_3_data:/app/data
@@ -101,6 +104,7 @@ services:
       NODE_ID: "client_1"
       APP_ID: "app_1"
       EDGE_CLIENT_URL: "http://client_1:8000"
+      CA_FINGERPRINT: "${CA_FINGERPRINT:-}"  # przypięty Root CA (client.sh up -> .env)
       NODE_NAME: "Edge App #1"
       PORT: "8000"
       DATA_DIR: "/app/data"
@@ -120,6 +124,7 @@ services:
       NODE_ID: "client_2"
       APP_ID: "app_2"
       EDGE_CLIENT_URL: "http://client_2:8000"
+      CA_FINGERPRINT: "${CA_FINGERPRINT:-}"  # przypięty Root CA (client.sh up -> .env)
       NODE_NAME: "Edge App #2"
       PORT: "8000"
       DATA_DIR: "/app/data"
@@ -139,6 +144,7 @@ services:
       NODE_ID: "client_3"
       APP_ID: "app_3"
       EDGE_CLIENT_URL: "http://client_3:8000"
+      CA_FINGERPRINT: "${CA_FINGERPRINT:-}"  # przypięty Root CA (client.sh up -> .env)
       NODE_NAME: "Edge App #3"
       PORT: "8000"
       DATA_DIR: "/app/data"

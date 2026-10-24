@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 import secrets
@@ -204,10 +205,63 @@ def issue_user_certificate(username: str, email: str):
     signed by the root CA.
     """
 
-    ca_private_key, ca_certificate = load_ca()
-
-    # User private key
     user_private_key = ec.generate_private_key(CURVE)
+    result = _sign_leaf(user_private_key.public_key(), username, email)
+    result["private_key_pem"] = user_private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    ).decode()
+    return result
+
+
+class CsrError(ValueError):
+    """Wniosek CSR odrzucony przy sprawdzaniu (komunikat dla administratora)."""
+
+
+def load_csr(data: bytes) -> x509.CertificateSigningRequest:
+    """Wczytuje CSR (PEM lub DER) i sprawdza jego podpis (dowód posiadania klucza prywatnego)."""
+    try:
+        if data.lstrip().startswith(b"-----BEGIN"):
+            csr = x509.load_pem_x509_csr(data)
+        else:
+            csr = x509.load_der_x509_csr(data)
+    except ValueError as exc:
+        raise CsrError(f"Niepoprawny wniosek CSR: {exc}") from exc
+    if not csr.is_signature_valid:
+        raise CsrError("Podpis wniosku CSR jest niepoprawny.")
+    return csr
+
+
+def csr_common_name(csr: x509.CertificateSigningRequest) -> str:
+    names = csr.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    if not names:
+        raise CsrError("Wniosek CSR nie ma CN.")
+    return str(names[0].value)
+
+
+def public_key_fingerprint(public_key) -> str:
+    """SHA-256 z SubjectPublicKeyInfo (DER) – identyfikuje klucz węzła we wniosku i w certyfikacie."""
+    der = public_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    return hashlib.sha256(der).hexdigest()
+
+
+def sign_csr(csr_data: bytes, username: str, email: str) -> dict:
+    """Wystawia certyfikat na klucz z wniosku CSR. Klucz prywatny węzła nigdy nie trafia do CA.
+
+    Z wniosku brany jest tylko klucz publiczny: podmiot, okres ważności i rozszerzenia ustala CA."""
+    csr = load_csr(csr_data)
+    if csr_common_name(csr) != username:
+        raise CsrError(f"CN wniosku ({csr_common_name(csr)}) nie zgadza się z nazwą węzła ({username}).")
+    public_key = csr.public_key()
+    if not isinstance(public_key, ec.EllipticCurvePublicKey) or public_key.curve.name != CURVE.name:
+        raise CsrError(f"Wniosek musi zawierać klucz EC {CURVE.name}.")
+    return _sign_leaf(public_key, username, email)
+
+
+def _sign_leaf(public_key, username: str, email: str) -> dict:
+    """Certyfikat węzła podpisany przez Root CA dla podanego klucza publicznego."""
+    ca_private_key, ca_certificate = load_ca()
 
     subject = x509.Name([
         x509.NameAttribute(NameOID.COUNTRY_NAME, "PL"),
@@ -222,7 +276,7 @@ def issue_user_certificate(username: str, email: str):
         x509.CertificateBuilder()
         .subject_name(subject)
         .issuer_name(ca_certificate.subject)
-        .public_key(user_private_key.public_key())
+        .public_key(public_key)
         .serial_number(random_serial_number())
         .not_valid_before(now)
         .not_valid_after(now + timedelta(days=365))
@@ -232,7 +286,7 @@ def issue_user_certificate(username: str, email: str):
         )
         .add_extension(LEAF_KEY_USAGE, critical=True)
         .add_extension(
-            x509.SubjectKeyIdentifier.from_public_key(user_private_key.public_key()),
+            x509.SubjectKeyIdentifier.from_public_key(public_key),
             critical=False
         )
         .add_extension(_authority_key_identifier(ca_certificate), critical=False)
@@ -243,12 +297,6 @@ def issue_user_certificate(username: str, email: str):
         serialization.Encoding.PEM
     )
 
-    private_key_pem = user_private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
-    )
-
     fingerprint = certificate.fingerprint(
         hashes.SHA256()
     ).hex()
@@ -256,7 +304,6 @@ def issue_user_certificate(username: str, email: str):
     return {
         "serial_number": str(certificate.serial_number),
         "certificate_pem": certificate_pem.decode(),
-        "private_key_pem": private_key_pem.decode(),
         "fingerprint": fingerprint,
         "valid_from": certificate.not_valid_before_utc,
         "valid_to": certificate.not_valid_after_utc,

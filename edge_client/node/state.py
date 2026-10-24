@@ -1,6 +1,7 @@
 import json
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import config
@@ -44,6 +45,15 @@ def add_inbox_entry(entry: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
         INBOX.append(entry)
         _save_inbox()
         return entry, True
+
+
+def save_received_file(filename: str, content: bytes) -> str:
+    """Stores a file delivered to this node under its base name (atomic). Returns the name used."""
+    safe_name = Path(filename).name
+    if not safe_name or safe_name.startswith("."):
+        raise ValueError("Invalid file name.")
+    utils.atomic_write_bytes(config.STORAGE_DIR / safe_name, content)
+    return safe_name
 
 
 def inbox_snapshot() -> List[Dict[str, Any]]:

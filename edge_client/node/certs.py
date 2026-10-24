@@ -1,14 +1,16 @@
 """Certificate store of the edge client: exactly one certificate (with its key) per node.
 
-Uploading a new certificate + key replaces the stored one. The Root CA and the latest CRL are kept next to it,
-because the edge app needs both to check certificates offline.
+The key is generated here and never leaves the node (except to this node's edge app): enroll.py sends only a CSR,
+the CA returns a certificate, and installing it replaces the previous one. The Root CA and the latest CRL are kept
+next to it, because the edge app needs both to check certificates offline.
 
 Layout of DATA_DIR/certs/ (PEM for certificates and keys, DER for the CRL):
     ca.pem      Root CA certificate (the first one uploaded; another CA is rejected)
     crl.der     newest CRL signed by that CA (higher CRLNumber replaces it)
     cert.pem    certificate of this node
     key.pem     its private key (mode 0600)
-    meta.json   upload time of the certificate
+    meta.json   installation time of the certificate
+    pending_key.pem, pending.csr, pending.json   new key + request waiting for the CA (enroll.py)
 
 The edge client never signs anything. On upload it checks that the key matches the certificate and that the
 certificate and the CRL come from the stored CA; at any time the certificate (or any other one) can be checked
@@ -17,6 +19,7 @@ app (pki/verifier.py). The edge app verifies everything again before using it.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import threading
@@ -27,6 +30,8 @@ from typing import Any, Dict, Optional
 from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 import config
 from pki.verifier import Verdict, verify
@@ -37,6 +42,9 @@ CRL_FILE = "crl.der"
 CERT_FILE = "cert.pem"
 KEY_FILE = "key.pem"
 META_FILE = "meta.json"
+PENDING_KEY_FILE = "pending_key.pem"
+PENDING_CSR_FILE = "pending.csr"
+PENDING_META_FILE = "pending.json"
 
 
 class CertStoreError(ValueError):
@@ -61,23 +69,6 @@ def _load_crl(data: bytes) -> x509.CertificateRevocationList:
         raise CertStoreError(f"Niepoprawna lista CRL: {exc}") from exc
 
 
-def classify(data: bytes) -> str:
-    """Recognises an uploaded file by its content: 'key', 'crl', 'ca' (CA certificate) or 'cert'."""
-    if b"PRIVATE KEY-----" in data:
-        return "key"
-    try:
-        _load_crl(data)
-        return "crl"
-    except CertStoreError:
-        pass
-    cert = load_certificate(data)  # raises CertStoreError for anything else
-    try:
-        is_ca = cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca
-    except x509.ExtensionNotFound:
-        is_ca = False
-    return "ca" if is_ca else "cert"
-
-
 def _crl_number(crl: x509.CertificateRevocationList) -> Optional[int]:
     try:
         return crl.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number
@@ -93,9 +84,29 @@ def _pem(cert: x509.Certificate) -> bytes:
     return cert.public_bytes(serialization.Encoding.PEM)
 
 
+def crl_number(crl: x509.CertificateRevocationList) -> Optional[int]:
+    return _crl_number(crl)
+
+
+def fingerprint(cert: x509.Certificate) -> str:
+    return _fingerprint(cert)
+
+
+def key_fingerprint(public_key) -> str:
+    """SHA-256 of SubjectPublicKeyInfo (DER) - the same id of a key in the CSR, at the portal and in the CA."""
+    der = public_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+    return hashlib.sha256(der).hexdigest()
+
+
+def signature_name(obj) -> str:
+    """Signature algorithm of a certificate / CRL for the transfer register, e.g. 'ecdsa-with-SHA256'."""
+    return getattr(obj.signature_algorithm_oid, "_name", obj.signature_algorithm_oid.dotted_string)
+
+
 class CertStore:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, pin: str = ""):
         self.root = Path(root)
+        self.pin = pin.replace(":", "").strip().lower()
         self._lock = threading.Lock()
         self._migrate_versions()
 
@@ -154,7 +165,7 @@ class CertStore:
                 "fingerprint": _fingerprint(cert),
                 "not_before": cert.not_valid_before_utc.isoformat(),
                 "not_after": cert.not_valid_after_utc.isoformat(),
-                "uploaded_at": meta.get("uploaded_at"),
+                "installed_at": meta.get("installed_at") or meta.get("uploaded_at"),
                 "verdict": self.check(cert, now).to_dict(),
             },
             "ca": None if ca is None else {
@@ -168,6 +179,33 @@ class CertStore:
                 "next_update": crl.next_update_utc.isoformat() if crl.next_update_utc else None,
                 "revoked_count": len(crl),
             },
+        }
+
+    def ca_der(self) -> Optional[bytes]:
+        ca = self.ca()
+        return None if ca is None else ca.public_bytes(serialization.Encoding.DER)
+
+    def crl_der(self) -> Optional[bytes]:
+        return self._read(CRL_FILE)
+
+    def summary(self) -> Dict[str, Any]:
+        """The same metadata as the portal's /pki/summary: a peer compares numbers before downloading anything."""
+        ca, crl = self.ca(), self.crl()
+        return {
+            "ca": None if ca is None else {
+                "fingerprint": _fingerprint(ca),
+                "subject": ca.subject.rfc4514_string(),
+                "not_after": ca.not_valid_after_utc.isoformat(),
+                "size": len(self.ca_der()),
+            },
+            "crl": None if crl is None else {
+                "number": _crl_number(crl),
+                "this_update": crl.last_update_utc.isoformat(),
+                "next_update": crl.next_update_utc.isoformat() if crl.next_update_utc else None,
+                "revoked_count": len(crl),
+                "size": len(self.crl_der()),
+            },
+            "certs": None,  # the portal lists issued certificates; an edge client holds only its own
         }
 
     def bundle(self) -> Dict[str, Any]:
@@ -187,13 +225,15 @@ class CertStore:
     # ---- writing ---------------------------------------------------------------------------
 
     def set_ca(self, data: bytes) -> bool:
-        """Stores the Root CA. Returns False when the same CA is already stored; another CA is rejected."""
+        """Stores the Root CA (pki_sync.py). False when the same CA is already stored; another CA is rejected."""
         ca = load_certificate(data)
         try:
             if not ca.extensions.get_extension_for_class(x509.BasicConstraints).value.ca:
                 raise CertStoreError("Certyfikat nie jest certyfikatem CA (BasicConstraints: CA=false).")
         except x509.ExtensionNotFound:
             raise CertStoreError("Certyfikat CA nie ma rozszerzenia BasicConstraints.") from None
+        if self.pin and _fingerprint(ca) != self.pin:
+            raise CertStoreError("Certyfikat CA nie zgadza się z przypiętym odciskiem (CA_FINGERPRINT).")
         with self._lock:
             current = self.ca()
             if current is not None:
@@ -204,7 +244,7 @@ class CertStore:
         return True
 
     def set_certificate(self, cert_data: bytes, key_data: bytes) -> bool:
-        """Stores the certificate + key, replacing the previous pair. Returns True if one was replaced."""
+        """Stores the certificate + key, replacing the previous pair (via install_issued). True if one was replaced."""
         ca = self.ca()
         if ca is None:
             raise CertStoreError("Najpierw trzeba wgrać certyfikat Root CA.")
@@ -221,7 +261,7 @@ class CertStore:
             raise CertStoreError("Klucz prywatny nie pasuje do certyfikatu.")
         key_pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                     serialization.NoEncryption())
-        meta = {"uploaded_at": datetime.now(timezone.utc).isoformat()}
+        meta = {"installed_at": datetime.now(timezone.utc).isoformat()}
         with self._lock:
             replaced = (self.root / CERT_FILE).exists()
             # The certificate is removed before its key is replaced, so a certificate on disk always has its key.
@@ -230,6 +270,59 @@ class CertStore:
             atomic_write_bytes(self.root / META_FILE, json.dumps(meta).encode())
             atomic_write_bytes(self.root / CERT_FILE, _pem(cert))
         return replaced
+
+    # ---- own key and certificate request (enroll.py) ----------------------------------------
+
+    def pending(self) -> Optional[Dict[str, Any]]:
+        """The certificate request waiting for the CA: key fingerprint, status, CSR (DER). None if there is none."""
+        meta = self._read(PENDING_META_FILE)
+        csr = self._read(PENDING_CSR_FILE)
+        if meta is None or csr is None or self._read(PENDING_KEY_FILE) is None:
+            return None
+        return {**json.loads(meta), "csr_der": csr}
+
+    def new_request(self, node_id: str) -> Dict[str, Any]:
+        """Generates a new key (EC P-256, never leaves this node) and a CSR with CN = node_id.
+
+        The current certificate and its key stay in use until the CA issues a certificate for the new key."""
+        key = ec.generate_private_key(ec.SECP256R1())
+        csr = (x509.CertificateSigningRequestBuilder()
+               .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, node_id)]))
+               .sign(key, hashes.SHA256()))
+        meta = {"node_id": node_id, "key_fingerprint": key_fingerprint(key.public_key()), "status": "NEW",
+                "reason": None, "created_at": datetime.now(timezone.utc).isoformat()}
+        key_pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                    serialization.NoEncryption())
+        with self._lock:
+            atomic_write_bytes(self.root / PENDING_KEY_FILE, key_pem, mode=0o600)
+            atomic_write_bytes(self.root / PENDING_CSR_FILE, csr.public_bytes(serialization.Encoding.DER))
+            atomic_write_bytes(self.root / PENDING_META_FILE, json.dumps(meta).encode())
+        return {**meta, "csr_der": csr.public_bytes(serialization.Encoding.DER)}
+
+    def set_pending_status(self, status: str, reason: Optional[str] = None) -> None:
+        with self._lock:
+            meta = json.loads(self._read(PENDING_META_FILE) or b"{}")
+            if not meta:
+                return
+            meta.update({"status": status, "reason": reason, "updated_at": datetime.now(timezone.utc).isoformat()})
+            atomic_write_bytes(self.root / PENDING_META_FILE, json.dumps(meta).encode())
+
+    def install_issued(self, cert_data: bytes) -> bool:
+        """Installs the certificate issued for the pending key (replaces the current one). False if it is not ours.
+
+        Accepted only if the stored Root CA signed it and it carries the public key of the pending request -
+        a certificate for someone else's key is useless, whoever delivered it."""
+        key = self._read(PENDING_KEY_FILE)
+        if key is None:
+            return False
+        cert = load_certificate(cert_data)
+        if key_fingerprint(cert.public_key()) != key_fingerprint(serialization.load_pem_private_key(key, None).public_key()):
+            return False
+        self.set_certificate(cert_data, key)  # checks the CA signature and the key again
+        with self._lock:
+            for name in (PENDING_META_FILE, PENDING_CSR_FILE, PENDING_KEY_FILE):
+                (self.root / name).unlink(missing_ok=True)
+        return True
 
     def update_crl(self, data: bytes) -> bool:
         """Stores a CRL signed by the stored CA if its CRLNumber is higher. False = same or older (skipped)."""
@@ -256,5 +349,5 @@ _store: Optional[CertStore] = None
 def get_store() -> CertStore:
     global _store
     if _store is None:
-        _store = CertStore(config.CERTS_DIR)
+        _store = CertStore(config.CERTS_DIR, config.CA_FINGERPRINT)
     return _store
