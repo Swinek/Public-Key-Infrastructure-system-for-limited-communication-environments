@@ -1,6 +1,6 @@
 """Wspólne narzędzia testowe (import modułów komponentów).
 
-Komponenty (admin/backend, clients/backend, edges) nie są pakietami Pythona –
+Komponenty (admin/backend, edge_client/backend, edge_client/node, edge_app) nie są pakietami Pythona –
 ich importy absolutne zakładają, że katalog komponentu jest w sys.path
 (np. ``from pki.ca import ...``, ``from database import ...``, ``import config``).
 Nazwy modułów kolidują między komponentami (database, routers, main, config, ...),
@@ -18,8 +18,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 COMPONENT_DIRS = {
     "admin": REPO_ROOT / "admin" / "backend",
-    "clients": REPO_ROOT / "clients" / "backend",
-    "edges": REPO_ROOT / "edges",
+    "edge_client": REPO_ROOT / "edge_client" / "backend",
+    "edge_client_node": REPO_ROOT / "edge_client" / "node",
+    "edge_app": REPO_ROOT / "edge_app",
+}
+
+# Katalogi dołączane za katalogiem komponentu (w obrazie Dockera kopiowane do niego przy budowaniu):
+# Edge client używa weryfikatora offline z edge_app/pki. Moduły o tych samych nazwach (config, utils, routers)
+# wczytują się z katalogu komponentu, bo ten jest pierwszy w sys.path.
+EXTRA_DIRS = {
+    "edge_client_node": [REPO_ROOT / "edge_app"],
 }
 
 # Moduły najwyższego poziomu, których nazwy mogą kolidować między komponentami.
@@ -34,9 +42,11 @@ COLLIDING_MODULES = (
     "utils",
     "models",
     "client_node",
+    "app_node",
     "routing",
     "neighbours",
     "store",
+    "certs",
 )
 
 
@@ -59,5 +69,7 @@ def use_component(component: str) -> Path:
     other = {str(p) for p in COMPONENT_DIRS.values()}
     sys.path[:] = [p for p in sys.path if p not in other]
     sys.path.insert(0, str(target))
+    for i, extra in enumerate(EXTRA_DIRS.get(component, []), start=1):
+        sys.path.insert(i, str(extra))
     purge_colliding_modules()
     return target

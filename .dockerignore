@@ -3,5 +3,6 @@
 *
 !requirements-dev.txt
 !admin/backend/requirements.txt
-!clients/backend/requirements.txt
-!edges/requirements.txt
+!edge_client/backend/requirements.txt
+!edge_client/node/requirements.txt
+!edge_app/requirements.txt

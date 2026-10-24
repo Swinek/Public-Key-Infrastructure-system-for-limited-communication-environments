@@ -12,4 +12,8 @@ docs/
 .coverage
 htmlcov/
 received_files/
-edges/data/
+edge_app/data/
+
+# Notatki i wytyczne dla asystentów AI - tylko lokalnie
+AGENTS.md
+CLAUDE.md

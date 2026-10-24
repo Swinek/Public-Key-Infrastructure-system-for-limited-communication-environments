@@ -56,11 +56,11 @@ services:
       - pki-network
 
   # ============================================================================
-  # PANEL KLIENTA (PORTAL SAMOOBSŁUGOWY WĘZŁÓW / RA - BEZ KLUCZA ROOT CA)
+  # EDGE CLIENT – PUBLIKACJA DANYCH PKI DLA WĘZŁÓW PRZEZ WAN (TYLKO ODCZYT BAZY, BEZ KLUCZA ROOT CA)
   # ============================================================================
-  client-backend:
-    build: ./clients/backend
-    container_name: pki-client-backend
+  edge-client-backend:
+    build: ./edge_client/backend
+    container_name: pki-edge-client-backend
     restart: always
     ports:
       - "5001:5001"
@@ -73,17 +73,6 @@ services:
     networks:
       - pki-network
       - internet_net
-
-  client-frontend:
-    build: ./clients/frontend
-    container_name: pki-client-frontend
-    restart: always
-    ports:
-      - "3001:3001"
-    depends_on:
-      - client-backend
-    networks:
-      - pki-network
 
   # ============================================================================
   # TESTY (pytest + openssl) - tylko na żądanie: docker compose --profile test run --rm tests
@@ -100,7 +89,7 @@ services:
       PYTHONDONTWRITEBYTECODE: 1
       # Adresy dla testów integracyjnych (pytest -m docker)
       ADMIN_URL: http://admin-backend:5000
-      PORTAL_URL: http://client-backend:5001
+      PORTAL_URL: http://edge-client-backend:5001
     command: ["pytest"]
     networks:
       - pki-network
@@ -108,8 +97,8 @@ services:
 networks:
   pki-network:
     driver: bridge
-  # Jedyny styk centrum z węzłami edges/ (symulowane "łącze internetowe").
-  # Tworzy ją `docker compose up`; edges/docker-compose.yml korzysta z niej jako external.
+  # Jedyny styk centrum z węzłami edge_app/ (symulowane "łącze internetowe").
+  # Tworzy ją `docker compose up`; docker-compose.edge.yml korzysta z niej jako external.
   internet_net:
     name: internet_net
 

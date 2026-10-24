@@ -9,6 +9,7 @@ RUN apt-get update \
 WORKDIR /repo
 COPY requirements-dev.txt ./
 COPY admin/backend/requirements.txt admin/backend/
-COPY clients/backend/requirements.txt clients/backend/
-COPY edges/requirements.txt edges/
+COPY edge_client/backend/requirements.txt edge_client/backend/
+COPY edge_client/node/requirements.txt edge_client/node/
+COPY edge_app/requirements.txt edge_app/
 RUN pip install --no-cache-dir -r requirements-dev.txt

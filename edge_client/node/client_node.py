@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+
+import sys
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+# Ensure the edge client node directory is on sys.path for both direct run and module imports
+NODE_DIR = Path(__file__).resolve().parent
+if str(NODE_DIR) not in sys.path:
+    sys.path.insert(0, str(NODE_DIR))
+
+from fastapi import FastAPI
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+import config
+import neighbours
+from routers import certs, network, p2p
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Neighbour discovery: one hello per link at start (no static PEERS/ROUTES, no periodic traffic).
+    neighbours.start()
+    yield
+
+
+app = FastAPI(
+    title=f"Edge client API: {config.NODE_NAME}",
+    description=(
+        f"Node {config.NODE_NAME} ({config.NODE_ID}), port {config.PORT}. "
+        f"Neighbours are discovered by a one-time UDP hello (port {config.HELLO_PORT}) when a radio link "
+        f"({config.P2P_CIDR}) comes up."
+    ),
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+if config.STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(config.STATIC_DIR)), name="static")
+
+
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+def root_page():
+    index_path = config.STATIC_DIR / "index.html"
+    if index_path.exists():
+        return FileResponse(index_path)
+    return {
+        "service": "Node API",
+        "node_id": config.NODE_ID,
+        "node_name": config.NODE_NAME,
+        "local_ips": [f"{i['ip']}:{config.PORT}" for i in neighbours.p2p_interfaces()],
+        "peers": [f"{n['name']} ({n['ip']}:{n['port']})" for n in neighbours.current()],
+        "neighbours_discover": "POST /api/neighbours/discover",
+        "documentation": "/docs"
+    }
+
+
+# Register modular routers
+app.include_router(network.router)
+app.include_router(p2p.router)
+app.include_router(certs.router)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=config.PORT)

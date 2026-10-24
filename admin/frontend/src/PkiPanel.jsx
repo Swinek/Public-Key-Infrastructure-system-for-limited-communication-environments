@@ -3,20 +3,9 @@ import axios from 'axios';
 import {
   ShieldCheck,
   FileText,
-  History,
   RefreshCw,
-  Download,
-  X,
-  Fingerprint
+  Download
 } from 'lucide-react';
-
-const TRIGGER_LABELS = {
-  startup: 'Start CA',
-  new_ca: 'Nowe CA',
-  revocation: 'Odwołanie',
-  scheduled: 'Okresowa',
-  manual: 'Ręczna'
-};
 
 const KEY_USAGE_LABELS = {
   digital_signature: 'digitalSignature',
@@ -87,68 +76,21 @@ const SizeBar = ({ der, pem }) => {
   );
 };
 
-export function CertDetailsModal({ apiUrl, cert, onClose }) {
-  const [details, setDetails] = useState(null);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    axios.get(`${apiUrl}/pki/certificates/${cert.id}`)
-      .then((res) => setDetails(res.data))
-      .catch((err) => setError(err.response?.data?.error || 'Nie udało się odczytać certyfikatu.'));
-  }, [apiUrl, cert.id]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
-      <div className="w-full max-w-lg bg-white border border-slate-200 rounded-xl p-6 shadow-xl">
-        <div className="flex justify-between items-center mb-4 border-b border-slate-100 pb-3">
-          <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-            <FileText className="w-4 h-4 text-indigo-600" />
-            Rozszerzenia X.509 – {cert.username}
-          </h3>
-          <button onClick={onClose} className="p-1 text-slate-400 hover:text-slate-700 cursor-pointer">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-        {error && <p className="text-xs text-rose-600">{error}</p>}
-        {!details && !error && <p className="text-xs text-slate-400">Wczytywanie…</p>}
-        {details && (
-          <div className="grid grid-cols-2 gap-4">
-            <Field label="Algorytm klucza">{details.key_algorithm}</Field>
-            <Field label="Algorytm podpisu">{details.signature_algorithm}</Field>
-            <div className="col-span-2"><Field label="Podmiot" mono>{details.subject}</Field></div>
-            <Field label="Numer seryjny" mono>{details.serial_number}</Field>
-            <Field label="Rozmiar">{details.size_der} B (DER) / {details.size_pem} B (PEM)</Field>
-            <div className="col-span-2"><Field label="SKI (Subject Key Identifier)" mono>{formatHex(details.subject_key_identifier)}</Field></div>
-            <div className="col-span-2"><Field label="AKI (Authority Key Identifier = SKI Root CA)" mono>{formatHex(details.authority_key_identifier)}</Field></div>
-            <div className="col-span-2">
-              <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">KeyUsage</p>
-              <KeyUsageBadges usages={details.key_usage} />
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// view: 'overview' (Root CA + bieżąca CRL) | 'entries' (wpisy bieżącej CRL) | 'history' (historia CRL)
-export default function PkiPanel({ apiUrl, refreshKey, view = 'overview' }) {
+// Root CA + bieżąca CRL
+export default function PkiPanel({ apiUrl, refreshKey }) {
   const [ca, setCa] = useState(null);
   const [crl, setCrl] = useState(null);
-  const [history, setHistory] = useState([]);
   const [issuing, setIssuing] = useState(false);
   const [error, setError] = useState(null);
 
   const load = async () => {
     try {
-      const [caRes, crlRes, historyRes] = await Promise.all([
+      const [caRes, crlRes] = await Promise.all([
         axios.get(`${apiUrl}/pki/ca`),
-        axios.get(`${apiUrl}/pki/crl`),
-        axios.get(`${apiUrl}/pki/crls`)
+        axios.get(`${apiUrl}/pki/crl`)
       ]);
       setCa(caRes.data);
       setCrl(crlRes.data);
-      setHistory(historyRes.data);
       setError(null);
     } catch (err) {
       setError(err.response?.data?.error || 'Nie udało się pobrać stanu PKI.');
@@ -179,7 +121,7 @@ export default function PkiPanel({ apiUrl, refreshKey, view = 'overview' }) {
         <div className="bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-lg px-4 py-3">{error}</div>
       )}
 
-      {view === 'overview' && <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Root CA */}
         <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-xs">
           <h3 className="text-sm font-semibold text-slate-900 mb-4 flex items-center gap-2 border-b border-slate-100 pb-3">
@@ -266,80 +208,7 @@ export default function PkiPanel({ apiUrl, refreshKey, view = 'overview' }) {
             </div>
           )}
         </div>
-      </div>}
-
-      {/* Wpisy bieżącej CRL */}
-      {view === 'entries' && crl && (
-        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
-          <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-            <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-              <Fingerprint className="w-4 h-4 text-slate-500" />
-              Wpisy CRL #{crl.crl_number}
-            </h3>
-            <span className="text-xs text-slate-400 font-medium">Razem: {crl.entries.length}</span>
-          </div>
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="border-b border-slate-100 text-[11px] font-semibold text-slate-400 uppercase tracking-wider bg-slate-50/50">
-                <th className="py-3 px-4">Numer seryjny</th>
-                <th className="py-3 px-4">Data odwołania</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 text-xs">
-              {crl.entries.map((e) => (
-                <tr key={e.serial_number}>
-                  <td className="py-2.5 px-4 font-mono text-[11px] text-slate-700">{e.serial_number}</td>
-                  <td className="py-2.5 px-4 text-slate-500">{formatDate(e.revocation_date)}</td>
-                </tr>
-              ))}
-              {crl.entries.length === 0 && (
-                <tr>
-                  <td colSpan="2" className="text-center py-6 text-slate-400 text-xs">Lista nie zawiera odwołanych certyfikatów.</td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Historia CRL */}
-      {view === 'history' && <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
-        <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-          <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-            <History className="w-4 h-4 text-slate-500" />
-            Historia wystawionych CRL
-          </h3>
-          <span className="text-xs text-slate-400 font-medium">Ostatnie {history.length}</span>
-        </div>
-        <table className="w-full text-left border-collapse">
-          <thead>
-            <tr className="border-b border-slate-100 text-[11px] font-semibold text-slate-400 uppercase tracking-wider bg-slate-50/50">
-              <th className="py-3 px-4">CRLNumber</th>
-              <th className="py-3 px-4">Powód</th>
-              <th className="py-3 px-4">thisUpdate</th>
-              <th className="py-3 px-4">nextUpdate</th>
-              <th className="py-3 px-4 text-right">Wpisy</th>
-              <th className="py-3 px-4 text-right">Rozmiar DER</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100 text-xs">
-            {history.map((h) => (
-              <tr key={h.crl_number} className="hover:bg-slate-50/60">
-                <td className="py-2.5 px-4 font-bold text-slate-900">#{h.crl_number}</td>
-                <td className="py-2.5 px-4">
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600 border border-slate-200">
-                    {TRIGGER_LABELS[h.trigger] || h.trigger}
-                  </span>
-                </td>
-                <td className="py-2.5 px-4 text-slate-500">{formatDate(h.this_update)}</td>
-                <td className="py-2.5 px-4 text-slate-500">{formatDate(h.next_update)}</td>
-                <td className="py-2.5 px-4 text-right text-slate-700">{h.revoked_count}</td>
-                <td className="py-2.5 px-4 text-right font-mono text-slate-700">{h.size_der} B</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>}
+      </div>
     </div>
   );
 }

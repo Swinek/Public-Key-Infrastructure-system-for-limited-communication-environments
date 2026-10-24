@@ -1,6 +1,7 @@
 # Zależności deweloperskie/testowe (instalacja: pip install -r requirements-dev.txt)
 -r admin/backend/requirements.txt
--r clients/backend/requirements.txt
--r edges/requirements.txt
+-r edge_client/backend/requirements.txt
+-r edge_client/node/requirements.txt
+-r edge_app/requirements.txt
 pytest>=8
 httpx>=0.27

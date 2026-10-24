@@ -9,10 +9,9 @@ import {
   CheckCircle, 
   AlertTriangle, 
   Download,
-  Key,
-  Info
+  Key
 } from 'lucide-react';
-import PkiPanel, { CertDetailsModal } from './PkiPanel';
+import PkiPanel from './PkiPanel';
 
 const API_URL = 'http://localhost:5000/api';
 
@@ -42,7 +41,6 @@ function App() {
   const [newlyIssuedCert, setNewlyIssuedCert] = useState(null);
   const [crlNotice, setCrlNotice] = useState(null);
   const [pkiRefreshKey, setPkiRefreshKey] = useState(0);
-  const [detailsCert, setDetailsCert] = useState(null);
 
   const handleDownloadCaCert = async () => {
     try {
@@ -153,11 +151,6 @@ function App() {
     user.email.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const filteredCerts = certs.filter(cert => 
-    cert.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    cert.serial_number.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 antialiased font-sans">
       
@@ -214,16 +207,6 @@ function App() {
             >
               Users & Edge Nodes
             </button>
-            <button 
-              onClick={() => { setActiveTab('certs'); setSearchQuery(''); }}
-              className={`px-4 py-2 text-xs font-semibold rounded-md transition-all cursor-pointer ${
-                activeTab === 'certs' 
-                  ? 'bg-white text-slate-900 shadow-xs' 
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Certificate Registry (CRL)
-            </button>
             <button
               onClick={() => { setActiveTab('pki'); setSearchQuery(''); }}
               className={`px-4 py-2 text-xs font-semibold rounded-md transition-all cursor-pointer ${
@@ -234,34 +217,14 @@ function App() {
             >
               PKI / CRL
             </button>
-            <button
-              onClick={() => { setActiveTab('crl-entries'); setSearchQuery(''); }}
-              className={`px-4 py-2 text-xs font-semibold rounded-md transition-all cursor-pointer ${
-                activeTab === 'crl-entries'
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Wpisy CRL
-            </button>
-            <button
-              onClick={() => { setActiveTab('crl-history'); setSearchQuery(''); }}
-              className={`px-4 py-2 text-xs font-semibold rounded-md transition-all cursor-pointer ${
-                activeTab === 'crl-history'
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Historia CRL
-            </button>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {(activeTab === 'users' || activeTab === 'certs') && <div className="relative min-w-[240px]">
+            {activeTab === 'users' && <div className="relative min-w-[240px]">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
               <input 
                 type="text"
-                placeholder={activeTab === 'users' ? 'Search by username or email...' : 'Search by name or serial number...'}
+                placeholder="Search by username or email..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg pl-9 pr-4 py-2 text-xs outline-none transition-all text-slate-900"
@@ -277,13 +240,9 @@ function App() {
           </div>
         )}
 
-        {activeTab === 'pki' || activeTab === 'crl-entries' || activeTab === 'crl-history' ? (
-          <PkiPanel
-            apiUrl={API_URL}
-            refreshKey={pkiRefreshKey}
-            view={{ pki: 'overview', 'crl-entries': 'entries', 'crl-history': 'history' }[activeTab]}
-          />
-        ) : activeTab === 'users' ? (
+        {activeTab === 'pki' ? (
+          <PkiPanel apiUrl={API_URL} refreshKey={pkiRefreshKey} />
+        ) : (
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
               <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
                 <h3 className="text-sm font-semibold text-slate-900">Registered Edge Nodes</h3>
@@ -363,98 +322,8 @@ function App() {
                 </tbody>
               </table>
             </div>
-        ) : (
-          /* Certificate Registry Tab */
-          <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
-            <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-              <h3 className="text-sm font-semibold text-slate-900">Certificate Registry & Revocation List (CRL)</h3>
-              <span className="text-xs text-slate-400 font-medium">Total: {filteredCerts.length}</span>
-            </div>
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-slate-100 text-[11px] font-semibold text-slate-400 uppercase tracking-wider bg-slate-50/50">
-                  <th className="py-3 px-4">Subject</th>
-                  <th className="py-3 px-4">Serial Number</th>
-                  <th className="py-3 px-4">Fingerprint (SHA-256)</th>
-                  <th className="py-3 px-4">Status</th>
-                  <th className="py-3 px-4">Issued At</th>
-                  <th className="py-3 px-4 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-xs">
-                {filteredCerts.map((cert) => (
-                  <tr key={cert.id} className="hover:bg-slate-50/60 transition-colors">
-                    <td className="py-3 px-4">
-                      <div className="font-semibold text-slate-900">{cert.username}</div>
-                      <div className="text-slate-400 text-[11px]">{cert.email}</div>
-                    </td>
-                    <td className="py-3 px-4 font-mono text-[11px] text-slate-700">
-                      {cert.serial_number}
-                    </td>
-                    <td className="py-3 px-4 font-mono text-[10px] text-slate-500 max-w-[160px] truncate" title={cert.fingerprint}>
-                      {cert.fingerprint || '—'}
-                    </td>
-                    <td className="py-3 px-4">
-                      <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold ${
-                        cert.status === 'ACTIVE' 
-                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
-                          : 'bg-rose-50 text-rose-700 border border-rose-200'
-                      }`}>
-                        {cert.status === 'ACTIVE' ? <CheckCircle className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
-                        {cert.status}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-slate-500 text-[11px]">
-                      {new Date(cert.issued_at).toLocaleDateString('pl-PL')}
-                    </td>
-                    <td className="py-3 px-4 text-right">
-                      <div className="flex items-center justify-end gap-2">
-                        {cert.certificate_pem && (
-                          <button
-                            onClick={() => setDetailsCert(cert)}
-                            className="p-1 text-slate-500 hover:text-indigo-600 rounded-md hover:bg-indigo-50 transition-colors cursor-pointer"
-                            title="Rozszerzenia X.509 (AKI, SKI, KeyUsage)"
-                          >
-                            <Info className="w-4 h-4" />
-                          </button>
-                        )}
-                        {cert.certificate_pem && (
-                          <button
-                            onClick={() => downloadFile(`${cert.username}_cert.pem`, cert.certificate_pem)}
-                            className="p-1 text-slate-500 hover:text-indigo-600 rounded-md hover:bg-indigo-50 transition-colors cursor-pointer"
-                            title="Pobierz certyfikat PEM"
-                          >
-                            <Download className="w-4 h-4" />
-                          </button>
-                        )}
-                        {cert.status === 'ACTIVE' && (
-                          <button 
-                            onClick={() => openRevokeModal(cert.id)}
-                            className="px-2 py-0.5 text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-md border border-rose-200 font-medium transition-colors cursor-pointer"
-                          >
-                            Revoke
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-                {filteredCerts.length === 0 && (
-                  <tr>
-                    <td colSpan="6" className="text-center py-10 text-slate-400 text-xs">
-                      No records found in certificate registry.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
         )}
       </main>
-
-      {detailsCert && (
-        <CertDetailsModal apiUrl={API_URL} cert={detailsCert} onClose={() => setDetailsCert(null)} />
-      )}
 
       {/* Revocation Modal */}
       {showRevokeModal && (

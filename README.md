@@ -19,8 +19,10 @@ Niniejszy projekt stanowi implementację i demonstrację systemu PKI. Umożliwia
 
 ```
 projekt_inzynierski/
-├── docker-compose.yml           # Centrum: PostgreSQL, Admin CA, Client Portal (+ sieć internet_net)
-├── client.sh                    # Skrypt pomocniczy do węzłów brzegowych (deleguje do edges/client.sh)
+├── docker-compose.yml           # Centrum: PostgreSQL, Panel administratora, backend Edge client 5001 (+ sieć internet_net)
+├── docker-compose.edge.yml      # Węzły: Edge client client_1..3 + Edge app app_1..3, gateway, sieci P2P/mgmt/app_net
+├── client.sh                    # „Łączność” z diagramu: łącze WAN (internet on/off), łącza radiowe (link up/down)
+├── nginx_edge.conf              # Gateway UI: Edge app :8001–8003, Edge client :3011–3013
 ├── pytest.ini, requirements-dev.txt, tests/   # Testy (pytest)
 ├── README.md                    # Główna dokumentacja projektu
 │
@@ -38,30 +40,30 @@ projekt_inzynierski/
 │   └── frontend/                # Panel Administratora Root CA (port 3000)
 │       ├── Dockerfile           # Środowisko Node.js 18
 │       ├── package.json         # React 18, Vite, Tailwind CSS, Lucide
-│       └── src/                 # App.jsx – węzły, wystawianie X.509, rejestr; PkiPanel.jsx – zakładka „PKI / CRL”
+│       └── src/                 # App.jsx – węzły, wydawanie i odwoływanie X.509; PkiPanel.jsx – zakładka „PKI / CRL”
 │
-├── clients/                     # Panel Samoobsługowy Klienta
-│   ├── backend/                 # Backend Portalu Klienta / Weryfikacji (port 5001)
+├── edge_client/                 # „Edge client” z diagramu: dystrybucja danych PKI do węzłów
+│   ├── backend/                 # Publikacja CA/CRL/certyfikatów dla węzłów przez WAN (port 5001, bez UI)
 │   │   ├── Dockerfile           # Obraz python:3.11-slim
 │   │   ├── requirements.txt     # Zależności (fastapi, uvicorn, asyncpg, pydantic)
 │   │   ├── main.py              # API Klienta / RA (BEZ DOSTĘPU DO KLUCZA ROOT CA!)
 │   │   ├── database.py          # Połączenie do bazy kontem pki_portal (tylko odczyt)
 │   │   ├── store.py             # Odczyt CA/CRL z bazy, DER/PEM, ETag
 │   │   └── routers/             # Endpointy read-only: /api/users, /api/certificates, /pki/* (dla węzłów)
-│   └── frontend/                # Portal Samoobsługowy Klienta / Węzłów Polowych (port 3001)
-│       ├── Dockerfile           # Środowisko Node.js 18
-│       ├── package.json         # React 18, Vite, Tailwind CSS, Lucide
-│       └── src/                 # App.jsx – tożsamość węzła, pobieranie poświadczeń; PkiStatus.jsx – „Stan PKI dla węzłów”
+│   └── node/                    # Edge client N na węźle (kontenery client_1..3, UI :3011–3013)
+│       ├── client_node.py       # Aplikacja FastAPI Edge clienta
+│       ├── neighbours.py        # Sąsiedzi radiowi: jednorazowe hello przy zestawieniu łącza
+│       ├── routing.py           # Dostarczanie tylko do sąsiadów w zasięgu
+│       ├── certs.py             # Magazyn: jeden certyfikat węzła (+ klucz), Root CA i CRL
+│       ├── routers/             # certs.py – wgranie, pobranie, sprawdzenie, pakiet dla Edge app; P2P; diagnostyka WAN
+│       └── static/              # Konsola Edge clienta
 │
-├── edges/                       # Węzły brzegowe / statki (symulacja sieci P2P w trybie offline)
-│   ├── docker-compose.yml       # Orkiestracja węzłów (client_1..3, gateway, początkowe łącza p2p_12/p2p_23)
-│   ├── client.sh                # Skrypt sterowania węzłami, łączem WAN i łączami radiowymi
-│   ├── client_node.py           # Aplikacja węzła brzegowego (FastAPI)
-│   ├── neighbours.py            # Sąsiedzi radiowi: jednorazowe hello przy zestawieniu łącza
-│   ├── routing.py               # Dostarczanie tylko do sąsiadów w zasięgu
-│   ├── routers/                 # Endpointy P2P, diagnostyki sieci i testu łączności
-│   ├── static/                  # Panel graficzny węzła brzegowego
-│   └── nginx_gateway.conf       # Konfiguracja reverse proxy dla portów 8001–8003
+├── edge_app/                    # „Edge app” z diagramu: tylko użycie certyfikatu (kontenery app_1..3, UI :8001–8003)
+│   ├── app_node.py              # Aplikacja FastAPI Edge app
+│   ├── pki/                     # Magazyn (przypięty Root CA, certyfikat + klucz, CRL) i weryfikator offline
+│   ├── routers/pki.py           # Pobranie certyfikatu, klucza, Root CA i CRL od Edge clienta; status
+│   ├── routers/auth.py          # Wzajemne uwierzytelnianie Edge app: wyzwanie → podpis → weryfikacja offline
+│   └── static/                  # Panel Edge app
 │
 └── scripts/                     # Skrypty demonstracyjne offline auth (OpenSSL / Python)
 ```
@@ -104,8 +106,8 @@ System posiada wbudowany silnik kryptograficzny oparty o bibliotekę `cryptograp
 
 ```bash
 docker compose up --build -d        # CA, portal klienta, baza
-./client.sh up                      # węzły brzegowe (domyślnie OFFLINE)
-./client.sh internet on 3           # węzeł 3 ma łącze WAN – widzi portal pod http://pki-client-backend:5001
+./client.sh up                      # węzły: Edge client + Edge app (domyślnie bez WAN)
+./client.sh internet on 3           # Edge client 3 ma łącze WAN – widzi portal pod http://pki-edge-client-backend:5001
 ```
 
 Testy (pytest + openssl) uruchamia się w kontenerze, bez lokalnego Pythona:
@@ -115,27 +117,51 @@ docker compose --profile test run --rm tests                 # testy jednostkowe
 docker compose --profile test run --rm tests pytest -m docker # testy integracyjne (działające centrum)
 ```
 
-Centrum (`docker-compose.yml`) i węzły (`edges/docker-compose.yml`) to dwa osobne systemy. Jedynym stykiem
+Centrum (`docker-compose.yml`) i węzły (`docker-compose.edge.yml`) to dwa osobne systemy. Jedynym stykiem
 między nimi jest sieć `internet_net`: tworzy ją `docker compose up` centrum, portal klienta jest do niej
-podłączony na stałe, a węzły – tylko po `./client.sh internet on`.
+podłączony na stałe, a Edge clienty – tylko po `./client.sh internet on`. Edge app nigdy nie ma WAN.
 
 
 ### Dostęp do usług (Rozdzielona Architektura)
 
 | Usługa | Adres URL | Kontener | Opis |
 | :--- | :--- | :--- | :--- |
-| **Panel Administratora (Frontend)** | [http://localhost:3000](http://localhost:3000) | `pki-admin-frontend` | Zarządzanie Root CA, wystawianie certyfikatów, rejestr CRL |
+| **Panel Administratora (Frontend)** | [http://localhost:3000](http://localhost:3000) | `pki-admin-frontend` | Węzły, wydawanie i odwoływanie certyfikatów, Root CA i bieżąca CRL |
 | **Backend Administratora (API)** | [http://localhost:5000/docs](http://localhost:5000/docs) | `pki-admin-backend` | REST API Root CA z dostępem do klucza prywatnego CA |
-| **Portal Klienta (Frontend)** | [http://localhost:3001](http://localhost:3001) | `pki-client-frontend` | Portal samoobsługowy dla węzłów brzegowych / użytkowników |
-| **Backend Klienta (API)** | [http://localhost:5001/docs](http://localhost:5001/docs) | `pki-client-backend` | Publiczne API weryfikacji i pobierania poświadczeń (bez klucza CA!) |
+| **Backend Edge client (API)** | [http://localhost:5001/docs](http://localhost:5001/docs) | `pki-edge-client-backend` | Publikacja CA, CRL i certyfikatów dla węzłów przez WAN (tylko odczyt bazy, bez klucza CA!) |
 | **Baza Danych PostgreSQL** | `localhost:5433` (wewn. `5432`) | `pki-db` | Relacyjny magazyn węzłów i certyfikatów |
-| **Węzły brzegowe** | [http://localhost:8001](http://localhost:8001), `:8002`, `:8003` (Swagger: `/docs`) | `client_1..3` | Panel węzła przez gateway nginx |
+| **Edge app 1–3** | [http://localhost:8001](http://localhost:8001), `:8002`, `:8003` (Swagger: `/docs`) | `app_1..3` | Przykładowa aplikacja: pobiera certyfikat od Edge clienta i uwierzytelnia się z inną Edge app |
+| **Edge client 1–3 (węzły)** | [http://localhost:3011](http://localhost:3011), `:3012`, `:3013` (Swagger: `/docs`) | `client_1..3` | Wersje certyfikatu (wgranie, pobranie), łącze WAN, łącza radiowe P2P |
 
 ---
 
-## Węzły brzegowe (`edges/`)
+## Węzły brzegowe (`edge_client/node/` + `edge_app/`)
 
-Węzły („okręty”) komunikują się przez symulowane, wolne łącze radiowe P2P. Na starcie łącza tworzą łańcuch:
+Węzeł N to para kontenerów z diagramu:
+
+- **Edge client N** (`client_N`) – **przechowuje jeden certyfikat węzła** z kluczem. Wgranie nowego zastępuje
+  poprzedni; certyfikat można pobrać (PEM, bez klucza). Trzyma też Root CA i najnowszą CRL i **w każdej chwili
+  sprawdza offline** swój certyfikat albo dowolny inny
+  (łańcuch do Root CA, ważność, status w CRL – ten sam weryfikator co Edge app, `edge_app/pki`, dołączany do obrazu
+  przy budowaniu). Poza tym: łącze WAN do centrum, łącza radiowe P2P, wiadomości i pliki. Niczego nie podpisuje.
+- **Edge app N** (`app_N`) – przykładowa aplikacja, która **tylko się uwierzytelnia**. Panel ma jeden formularz:
+  wybór partnera i „Authenticate”. Przed uwierzytelnieniem aplikacja sama pobiera od swojego Edge clienta
+  certyfikat z kluczem, Root CA i CRL (strzałka „cert”, sieć `mgmt_N`; pakiet z kluczem Edge client wydaje tylko
+  adresowi swojej Edge app), sprawdza je względem przypiętego Root CA i uwierzytelnia się z drugą Edge app
+  (wyzwanie → podpis → weryfikacja offline) w odrębnym kanale `app_net`. Gdy Edge client jest niedostępny, używa
+  ostatnio pobranej kopii. Nie ma WAN ani P2P.
+
+```bash
+./client.sh cert-upload 1 node.pem node.key ca.pem crl.der   # certyfikat Edge client 1 (zastępuje poprzedni; pliki rozpoznawane po treści)
+./client.sh certs 1                       # certyfikat, Root CA i CRL w Edge client 1
+./client.sh cert-download 1 [plik.pem]    # pobranie certyfikatu (PEM, bez klucza)
+./client.sh cert-check 1 [plik]           # sprawdzenie offline w Edge client 1 (domyślnie jego certyfikat)
+./client.sh fetch 1                       # app_1 pobiera certyfikat od Edge client 1 (auth robi to sam)
+./client.sh pki [N]                       # magazyn PKI Edge app
+./client.sh auth 1 2                      # app_1 ↔ app_2: wzajemne uwierzytelnienie certyfikatami
+```
+
+Edge clienty („okręty”) komunikują się przez symulowane, wolne łącze radiowe P2P. Na starcie łącza tworzą łańcuch:
 
     client_1 ──p2p_12── client_2 ──p2p_23── client_3
 
@@ -152,11 +178,15 @@ interfejs, więc wpis znika od razu – sprawdzane lokalnie, bez ruchu radiowego
 **tylko do węzłów w zasięgu**; do pozostałych węzeł zwraca „not in radio range”. Dostarczanie przez
 pośredników (store-and-forward) to Etap 3. Hello nie jest uwierzytelniane – mówi tylko, kto jest na łączu.
 
-Konfiguracja węzła (zmienne środowiskowe):
-- `NODE_ID`, `NODE_NAME` – identyfikator i nazwa (Edge App #N),
-- `P2P_CIDR`, `HELLO_PORT` – zakres adresów łączy radiowych i port hello (wartości domyślne w `edges/config.py`),
-- `DATA_DIR` – trwałe dane węzła (wolumen `client_N_data`): `inbox.json`, `received_files/`, `pki/` (Etap 2),
-- `PORTAL_URL` – adres portalu klienta w sieci `internet_net` (Etap 3).
+Konfiguracja Edge clienta (zmienne środowiskowe, wartości domyślne w `edge_client/node/config.py`):
+- `NODE_ID`, `NODE_NAME` – identyfikator (= CN certyfikatu węzła) i nazwa (Edge client #N),
+- `P2P_CIDR`, `HELLO_PORT` – zakres adresów łączy radiowych i port hello,
+- `DATA_DIR` – trwałe dane (wolumen `edge_client_N_data`): `inbox.json`, `received_files/`,
+- `PORTAL_URL` – adres portalu klienta w sieci `internet_net` (Etap 3),
+- `EDGE_APP_URL` – Edge app tego węzła (`http://app_N:8000`, sieć `mgmt_N`).
+
+Konfiguracja Edge app (`edge_app/config.py`): `NODE_ID` (CN certyfikatu), `APP_ID` (`app_N`), `DATA_DIR`
+(wolumen `edge_app_N_data`, magazyn `pki/`), `CA_FINGERPRINT` (przypięty Root CA), `CHALLENGE_TTL_SECONDS`.
 
 Wiadomości mają `msg_id`, nadawcę pierwotnego i listę `hops`. Węzeł odrzuca wiadomość, która już przez niego
 przeszła (pętla), a pliki są sprawdzane sumą SHA-256 na każdym skoku.
@@ -201,12 +231,13 @@ Aplikacja została zaprojektowana z myślą o czytelnej demonstracji działania 
 3. **Wydanie certyfikatu X.509:**
    * Kliknij przycisk **„Issue Certificate”** przy utworzonym użytkowniku.
    * System wygeneruje klucz ECDSA P-256, podpisze certyfikat kluczem Root CA (z AKI/SKI/KeyUsage) i zwróci certyfikat wraz z jednorazowym kluczem prywatnym.
-4. **Weryfikacja w Rejestrze Certyfikatów:**
-   * Przejdź do zakładki *„Certificate Registry”*, aby zobaczyć pełną historię poświadczeń wraz ze znacznikami czasu, numerami seryjnymi i fingerprintami.
+4. **Wgranie certyfikatu do Edge clienta:**
+   * W panelu Edge clienta (:3011–3013, zakładka *„Certificates”*) wgraj certyfikat z kluczem (oraz raz Root CA
+     i CRL) – certyfikat jest od razu sprawdzany offline.
 5. **Unieważnienie certyfikatu (CRL):**
    * Wybierz **„Revoke”** przy aktywnym użytkowniku, podaj przyczynę (np. *„Key Compromise / Token lost”*) i zatwierdź.
    * Certyfikat natychmiast zmienia status na `Revoked (CRL)` z zapisanym powodem i datą wycofania,
-     a CA podpisuje nową CRL – jej numer, wpisy i historię widać w zakładce *„PKI / CRL”*.
+     a CA podpisuje nową CRL – jej numer i datę ważności widać w zakładce *„PKI / CRL”*.
 
 ---
 

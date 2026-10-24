@@ -1,0 +1,248 @@
+# Węzły brzegowe („okręty”). Każdy węzeł N to para kontenerów z diagramu:
+#   client_N – Edge client N (edge_client/node): przechowuje wersje certyfikatu, łącze WAN, łącza radiowe P2P,
+#   app_N    – Edge app N (edge_app): tylko użycie certyfikatu (weryfikacja offline, uwierzytelnianie innych edge app).
+# Topologią steruje client.sh (Łączność): `internet on|off`, `link up|down`.
+#
+# Sieci P2P (internal, bez internetu) modelują zasięg radiowy między Edge clientami – jedna sieć = jedno łącze:
+#   p2p_12 (192.168.12.0/24): client_1 .10, client_2 .20
+#   p2p_23 (192.168.23.0/24): client_2 .20, client_3 .30
+# Łącze między dowolną inną parą tworzy na żądanie `client.sh link up <a> <b>` (np. p2p_13).
+# Schemat adresów: węzeł N w sieci p2p_ab ma IP 192.168.ab.N0.
+# Węzły nie znają topologii: sąsiadów poznają jednorazowym hello przy zestawieniu łącza (edge_client/node/neighbours.py).
+#
+# mgmt_N – sieć wewnętrzna węzła N: gateway (UI), client_N i app_N. Po niej Edge app pobiera od swojego
+# Edge clienta wybraną wersję certyfikatu (strzałka „cert”). Gateway (nginx) odrzuca ruch z sieci mgmt/p2p.
+# app_net – odrębny kanał między Edge appami (na diagramie: opcjonalna izolowana sieć), używany do uwierzytelniania.
+# internet_net – sieć zewnętrzna (tworzy ją centrum lub client.sh); Edge clienty są do niej podłączane
+# i odłączane przez `client.sh internet on|off` (alias inet-<id>).
+
+name: edge
+
+x-client-common: &client-common
+  build:
+    context: ./edge_client/node
+    dockerfile: Dockerfile
+    additional_contexts:
+      pki: ./edge_app/pki  # ten sam weryfikator offline co w Edge app (bez kopii kodu)
+  restart: unless-stopped
+
+x-app-common: &app-common
+  build:
+    context: ./edge_app
+    dockerfile: Dockerfile
+  restart: unless-stopped
+
+services:
+  # ---------------------------------------------------------------- Edge client 1..3
+  client_1:
+    <<: *client-common
+    container_name: client_1
+    environment:
+      NODE_ID: "client_1"
+      NODE_NAME: "Edge client #1"
+      PORT: "8000"
+      DATA_DIR: "/app/data"
+      PORTAL_URL: "http://pki-edge-client-backend:5001"
+      EDGE_APP_URL: "http://app_1:8000"
+    volumes:
+      - ./edge_client/node/static:/app/static:ro
+      - client_1_data:/app/data
+    networks:
+      p2p_12:
+        ipv4_address: 192.168.12.10
+      mgmt_1:
+        ipv4_address: 192.168.201.10
+
+  client_2:
+    <<: *client-common
+    container_name: client_2
+    environment:
+      NODE_ID: "client_2"
+      NODE_NAME: "Edge client #2"
+      PORT: "8000"
+      DATA_DIR: "/app/data"
+      PORTAL_URL: "http://pki-edge-client-backend:5001"
+      EDGE_APP_URL: "http://app_2:8000"
+    volumes:
+      - ./edge_client/node/static:/app/static:ro
+      - client_2_data:/app/data
+    networks:
+      p2p_12:
+        ipv4_address: 192.168.12.20
+      p2p_23:
+        ipv4_address: 192.168.23.20
+      mgmt_2:
+        ipv4_address: 192.168.202.10
+
+  client_3:
+    <<: *client-common
+    container_name: client_3
+    environment:
+      NODE_ID: "client_3"
+      NODE_NAME: "Edge client #3"
+      PORT: "8000"
+      DATA_DIR: "/app/data"
+      PORTAL_URL: "http://pki-edge-client-backend:5001"
+      EDGE_APP_URL: "http://app_3:8000"
+    volumes:
+      - ./edge_client/node/static:/app/static:ro
+      - client_3_data:/app/data
+    networks:
+      p2p_23:
+        ipv4_address: 192.168.23.30
+      mgmt_3:
+        ipv4_address: 192.168.203.10
+
+  # ---------------------------------------------------------------- Edge app 1..3
+  app_1:
+    <<: *app-common
+    container_name: app_1
+    environment:
+      NODE_ID: "client_1"
+      APP_ID: "app_1"
+      EDGE_CLIENT_URL: "http://client_1:8000"
+      NODE_NAME: "Edge App #1"
+      PORT: "8000"
+      DATA_DIR: "/app/data"
+    volumes:
+      - ./edge_app/static:/app/static:ro
+      - app_1_data:/app/data
+    networks:
+      mgmt_1:
+        ipv4_address: 192.168.201.20
+      app_net:
+        ipv4_address: 192.168.150.11
+
+  app_2:
+    <<: *app-common
+    container_name: app_2
+    environment:
+      NODE_ID: "client_2"
+      APP_ID: "app_2"
+      EDGE_CLIENT_URL: "http://client_2:8000"
+      NODE_NAME: "Edge App #2"
+      PORT: "8000"
+      DATA_DIR: "/app/data"
+    volumes:
+      - ./edge_app/static:/app/static:ro
+      - app_2_data:/app/data
+    networks:
+      mgmt_2:
+        ipv4_address: 192.168.202.20
+      app_net:
+        ipv4_address: 192.168.150.12
+
+  app_3:
+    <<: *app-common
+    container_name: app_3
+    environment:
+      NODE_ID: "client_3"
+      APP_ID: "app_3"
+      EDGE_CLIENT_URL: "http://client_3:8000"
+      NODE_NAME: "Edge App #3"
+      PORT: "8000"
+      DATA_DIR: "/app/data"
+    volumes:
+      - ./edge_app/static:/app/static:ro
+      - app_3_data:/app/data
+    networks:
+      mgmt_3:
+        ipv4_address: 192.168.203.20
+      app_net:
+        ipv4_address: 192.168.150.13
+
+  # ---------------------------------------------------------------- UI: Edge app 8001-8003, Edge client 3011-3013
+  gateway:
+    image: nginx:alpine
+    container_name: edge_gateway
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+      - "8002:8002"
+      - "8003:8003"
+      - "3011:3011"
+      - "3012:3012"
+      - "3013:3013"
+    volumes:
+      - ./nginx_edge.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      mgmt_1:
+        ipv4_address: 192.168.201.254
+      mgmt_2:
+        ipv4_address: 192.168.202.254
+      mgmt_3:
+        ipv4_address: 192.168.203.254
+      gateway_net: {}
+    depends_on:
+      - client_1
+      - client_2
+      - client_3
+      - app_1
+      - app_2
+      - app_3
+
+volumes:
+  client_1_data:
+  client_2_data:
+  client_3_data:
+  app_1_data:
+  app_2_data:
+  app_3_data:
+
+networks:
+  p2p_12:
+    name: p2p_12
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.12.0/24
+
+  p2p_23:
+    name: p2p_23
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.23.0/24
+
+  mgmt_1:
+    name: mgmt_1
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.201.0/24
+
+  mgmt_2:
+    name: mgmt_2
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.202.0/24
+
+  mgmt_3:
+    name: mgmt_3
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.203.0/24
+
+  # Poza P2P_CIDR węzłów (192.168.0.0/17), więc hello Edge clientów nigdy tu nie trafia.
+  app_net:
+    name: app_net
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 192.168.150.0/24
+
+  internet_net:
+    name: internet_net
+    external: true
+
+  gateway_net:
+    name: gateway_net
+    driver: bridge
