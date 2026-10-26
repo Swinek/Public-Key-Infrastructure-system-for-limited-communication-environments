@@ -21,7 +21,7 @@ router = APIRouter(prefix="/pki", tags=["PKI (neighbours)"])
 
 FORMAT = Query("der", pattern="^(der|pem)$")
 
-LABELS = {"ca_cert": "CERTIFICATE", "crl_full": "X509 CRL"}
+LABELS = {"ca_cert": "CERTIFICATE", "crl_full": "X509 CRL", "node_cert": "CERTIFICATE"}
 
 
 def peer_id(request: Request, fallback: Optional[str] = None) -> str:
@@ -82,6 +82,15 @@ def get_ca(request: Request, format: str = FORMAT):
     return _object(request, store.ca_der(), format, "ca_cert", "ca_certificate", "application/pkix-cert",
                    certs.fingerprint(ca)[:16] if ca else "",
                    signature=certs.signature_name(ca) if ca else None)
+
+
+@router.get("/node-cert/{cn}", summary="Certificate of a node held here (own or from neighbours), DER or PEM")
+def get_node_cert(request: Request, cn: str, format: str = FORMAT):
+    der = certs.get_store().node_certificate_der(cn)
+    cert = None if der is None else certs.load_certificate(der)
+    return _object(request, der, format, "node_cert", f"cert_{cn}", "application/pkix-cert",
+                   certs.fingerprint(cert)[:16] if cert else "", number=cert.serial_number if cert else None,
+                   signature=certs.signature_name(cert) if cert else None)
 
 
 @router.get("/crl", summary="Newest CRL signed by the CA (DER or PEM), ETag = CRLNumber")

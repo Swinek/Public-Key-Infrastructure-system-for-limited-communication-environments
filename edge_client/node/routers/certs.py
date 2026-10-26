@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
+from cryptography.hazmat.primitives import serialization
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 
@@ -123,6 +124,27 @@ def get_bundle(request: Request):
         raise HTTPException(status_code=403, detail="Pakiet z kluczem prywatnym jest dostępny tylko dla Edge app tego węzła.")
     print("[CERTS] Edge app took the certificate")
     return certs.get_store().bundle()
+
+
+@router.get("/nodes", summary="Certificates of other nodes held here (from radio neighbours), with an offline verdict")
+def list_node_certificates():
+    store = certs.get_store()
+    out = []
+    for cn in store.node_certificates():
+        cert = store.peer_certificate(cn)
+        if cert is not None:
+            out.append({"cn": cn, "serial_number": str(cert.serial_number),
+                        "not_after": cert.not_valid_after_utc.isoformat(), "verdict": store.check(cert).to_dict()})
+    return {"node_id": config.NODE_ID, "certificates": out}
+
+
+@router.get("/nodes/{cn}", summary="Certificate of another node (PEM) - e.g. for the edge app to encrypt for it")
+def download_node_certificate(cn: str):
+    cert = certs.get_store().peer_certificate(cn)
+    if cert is None:
+        raise HTTPException(status_code=404, detail=f"{config.NODE_ID} nie ma (jeszcze) certyfikatu węzła {cn} – "
+                                                    f"dotrze przy kontakcie radiowym z węzłem, który go zna.")
+    return Response(content=cert.public_bytes(serialization.Encoding.PEM), media_type="application/x-pem-file")
 
 
 @router.get("/certificate", summary="Download the certificate (PEM, without the key)")

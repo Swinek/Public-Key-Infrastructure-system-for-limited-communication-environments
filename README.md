@@ -140,23 +140,17 @@ Wnioski o certyfikat złożone przez węzły – **każdy wymaga decyzji adminis
 ## Edge Client Console (węzeł)
 
 http://localhost:3011 (client_1), :3012 (client_2), :3013 (client_3) – konsola operatora węzła. W nagłówku
-nazwa węzła i jego stan. Dwie zakładki:
+nazwa węzła i jego stan. Jedna strona, bez zakładek:
 
-### „Certificates”
 - **Certificate** – certyfikat węzła (podmiot, numer seryjny, ważność) z **werdyktem offline** `VALID` /
   `REVOKED` / `INVALID` / `UNKNOWN` liczonym lokalnie z przechowywanego Root CA i CRL, plus numer i ważność CRL.
   Przycisk pobrania certyfikatu (PEM, bez klucza).
 - **Certificate request** – stan wniosku: `NEW` (jeszcze nie wysłany), `RELAYED` (w drodze przez sąsiadów),
   `PENDING` (w CA), `REJECTED`, wraz z **pełnym odciskiem klucza** – ten sam odcisk widzi administrator.
   Przycisk **„New key + request”** generuje nowy klucz i wniosek (np. po odrzuceniu).
-- **CRL from removable media** – wgranie CRL z nośnika (np. pendrive); przyjęta tylko, jeśli podpisał ją
-  przypięty Root CA i ma wyższy numer niż obecna.
-- **Check offline** – sprawdzenie dowolnego certyfikatu (plik) albo własnego, bez sieci; opcjonalnie w podanej
-  chwili czasu.
 
-### „Radio neighbours”
-Sąsiedzi aktualnie w zasięgu radiowym: nazwa, id, adres na łączu i od kiedy są połączeni. Lista zmienia się
-na żywo po `link up` / `link down`.
+- **Radio neighbours** (stale widoczne pod certyfikatem) – sąsiedzi aktualnie w zasięgu radiowym: nazwa, id,
+  adres na łączu i od kiedy są połączeni. Lista zmienia się na żywo po `link up` / `link down`.
 
 Nie ma wgrywania certyfikatu, klucza ani Root CA – klucz powstaje w węźle i nigdy go nie opuszcza, certyfikat
 przychodzi z CA, Root CA jest przypięty.
@@ -347,7 +341,7 @@ Inne drogi:
 - **Dowolny węzeł z internetem** może być źródłem – CRL wchodzi do sieci przez ten węzeł, który akurat ma
   internet, i rozchodzi się od niego. Przy kilku drogach (np. trójkąt `link up 1 3`) węzeł pobiera CRL tylko raz:
   przed pobraniem porównuje numer w `summary`.
-- **Nośnik** – `./client.sh crl-upload N crl.der` albo „CRL from removable media” w konsoli. CRL wgrana do
+- **Nośnik** – `./client.sh crl-upload N crl.der`. CRL wgrana do
   dowolnego węzła jest od razu ogłaszana jego sąsiadom i idzie dalej tak samo jak z internetu. CRL do pobrania:
   `GET http://localhost:5000/api/certificates/crl/download?format=der`.
 - **Starsza albo podrobiona CRL jest odrzucana** – liczy się podpis przypiętego Root CA i rosnący `CRLNumber`;
@@ -356,7 +350,7 @@ Inne drogi:
 ### Weryfikacja offline
 Węzeł sprawdza certyfikat lokalnie: łańcuch do przypiętego Root CA, okres ważności i status w ostatniej CRL.
 Wynik: `valid`, `revoked`, `invalid` (np. obce CA, wygasły) albo `unknown` (brak aktualnych danych, np. CRL
-po `nextUpdate`). Sprawdzenie: `./client.sh cert-check N [plik]`, zakładka „Check offline” albo
+po `nextUpdate`). Sprawdzenie: `./client.sh cert-check N [plik]` albo
 `POST /api/certs/verify` (opcjonalny czas `at` – sprawdzenie „na dany moment”).
 
 ---
@@ -398,6 +392,35 @@ miała, `rejected`, `aborted`).
 > **W przygotowaniu – to be continued.** Edge App (`edge_app/`, kontenery `app_1..3`, porty 8001–8003) to
 > aplikacja, która będzie **tylko używać** certyfikatu otrzymanego od Edge clienta swojego węzła (weryfikacja
 > offline, uwierzytelnianie w odrębnym kanale). Opis zostanie uzupełniony po zakończeniu prac nad tym komponentem.
+
+### Wiadomości szyfrowane certyfikatem odbiorcy
+
+Jeden kanał: zaszyfrowane wiadomości idą tymi samymi łączami radiowymi co dane PKI (jawne, bo publiczne i podpisane
+przez CA). Edge app oddaje kopertę Edge clientowi swojego węzła, który wysyła ją jak zwykłą wiadomość P2P: do sąsiada
+bezpośrednio, dalej przez store-and-forward. `link up/down` steruje więc też wiadomościami.
+
+- **Certyfikaty węzłów** rozchodzą się razem z synchronizacją PKI (`pki_sync.py`): `/pki/summary` podaje CN → numer
+  seryjny znanych certyfikatów, węzeł pobiera tylko brakujące (`/pki/node-cert/<CN>`) i zapisuje je wyłącznie, gdy są
+  ważne wobec Root CA i lokalnej CRL. Odwołany certyfikat nie jest pobierany ani zapisywany.
+- **Szyfrowanie:** nadawca bierze certyfikat odbiorcy od własnego Edge clienta, sprawdza go offline (łańcuch, ważność,
+  CRL, CN) i szyfruje kluczem publicznym z certyfikatu (ECIES: jednorazowy klucz ECDH P-256 → HKDF-SHA256 →
+  AES-256-GCM, `edge_app/pki/ecies.py`). Otworzyć może tylko klucz prywatny odbiorcy, a pośrednicy widzą szyfrogram.
+- **Podpis nadawcy** (najpierw podpis, potem szyfrowanie, jak w S/MIME): wewnątrz szyfrogramu jest treść, certyfikat
+  nadawcy i podpis ECDSA jego kluczem prywatnym nad nadawca | odbiorca | numer certyfikatu odbiorcy | treść. Odbiorca
+  sprawdza offline certyfikat nadawcy (Root CA, ważność, CRL, CN = nadawca z koperty) i podpis. Wynik: „VERIFIED”
+  albo „NOT VERIFIED” z powodem (odwołany nadawca, podszycie pod inny węzeł, zmieniona treść). Pośrednicy nie widzą
+  ani treści, ani certyfikatu nadawcy.
+
+```bash
+./client.sh node-certs all                     # jakie certyfikaty innych węzłów zna każdy węzeł
+./client.sh link down 2 3
+./client.sh secret 1 3 "Ewakuować schronisko B"  # QUEUED – client_3 poza zasięgiem
+./client.sh secret-inbox all                   # app_2 (carrier): szyfrogram + „nie można odszyfrować”
+./client.sh link up 2 3                        # kontakt: koperta dociera do client_3
+./client.sh secret-inbox 3                     # app_3 (recipient): tekst + SENDER: VERIFIED / NOT VERIFIED
+```
+
+To samo w UI Edge appa (8001–8003, sekcja „Encrypted messages”) i w API `/api/messages/*`.
 
 ---
 

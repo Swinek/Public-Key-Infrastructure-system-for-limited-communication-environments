@@ -1,4 +1,4 @@
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect } = React;
 
 function RadioIcon({ className = "w-4 h-4" }) {
   return (
@@ -16,16 +16,6 @@ function RefreshCwIcon({ className = "w-4 h-4" }) {
       <path d="M21 3v5h-5" />
       <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
       <path d="M3 21v-5h5" />
-    </svg>
-  );
-}
-
-function UploadIcon({ className = "w-4 h-4" }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-      <polyline points="17 8 12 3 7 8" />
-      <line x1="12" y1="3" x2="12" y2="15" />
     </svg>
   );
 }
@@ -77,7 +67,6 @@ const errorText = (data) => {
 
 const card = "bg-white border border-slate-200 rounded-xl shadow-xs";
 const button = "bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded-lg text-xs cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5";
-const input = "bg-white border border-slate-200 focus:border-indigo-500 rounded-lg px-2.5 py-1.5 text-xs text-slate-700 outline-none";
 
 function Feedback({ result }) {
   if (!result) return null;
@@ -124,7 +113,7 @@ function RequestCard({ store, onChanged }) {
   };
 
   return (
-    <div className={`${card} p-4 space-y-3`}>
+    <div className={`${card} p-4 space-y-3 h-full flex flex-col`}>
       <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
         <ShieldCheckIcon className="w-4 h-4 text-indigo-600" /> Certificate request
       </h3>
@@ -150,103 +139,10 @@ function RequestCard({ store, onChanged }) {
         </p>
       )}
       <Feedback result={result} />
-      <button type="button" onClick={newRequest} disabled={busy} className={`${button} w-full`}>
+      <button type="button" onClick={newRequest} disabled={busy} className={`${button} w-full !mt-auto`}>
         {busy ? "Generating..." : "New key + request"}
       </button>
     </div>
-  );
-}
-
-// CRL delivered out of band (e.g. on a USB stick): stored only if signed by the Root CA and newer.
-function CrlUploadCard({ onStored }) {
-  const inputRef = useRef(null);
-  const [file, setFile] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState(null);
-
-  const handleUpload = async (e) => {
-    e.preventDefault();
-    const formData = new FormData();
-    formData.append("crl", file);
-    setBusy(true);
-    setResult(null);
-    try {
-      const res = await fetch("/api/certs/crl", { method: "POST", body: formData });
-      const data = await res.json();
-      if (res.ok) {
-        setResult({ ok: true, text: data.stored.length ? "CRL stored." : data.warnings.join(" ") });
-        setFile(null);
-        if (inputRef.current) inputRef.current.value = "";
-        onStored(data.status);
-      } else {
-        setResult({ ok: false, text: errorText(data) });
-      }
-    } catch (err) {
-      setResult({ ok: false, text: `Connection error: ${err.message}` });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <form onSubmit={handleUpload} className={`${card} p-4 space-y-3`}>
-      <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-        <UploadIcon className="w-4 h-4 text-indigo-600" /> CRL from removable media
-      </h3>
-      <input ref={inputRef} type="file" onChange={(e) => setFile(e.target.files[0] || null)}
-        className="w-full text-xs text-slate-600" />
-      <Feedback result={result} />
-      <button type="submit" disabled={busy || !file} className={`${button} w-full`}>
-        {busy ? "Uploading..." : "Upload CRL"}
-      </button>
-    </form>
-  );
-}
-
-// Offline check: the stored certificate (or any other file) against the stored Root CA and CRL.
-function CheckCard() {
-  const [file, setFile] = useState(null);
-  const [at, setAt] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [verdict, setVerdict] = useState(null);
-
-  const handleCheck = async (e) => {
-    e.preventDefault();
-    const formData = new FormData();
-    if (file) formData.append("cert", file);
-    if (at) formData.append("at", new Date(at).toISOString());
-    setBusy(true);
-    setVerdict(null);
-    try {
-      const res = await fetch("/api/certs/verify", { method: "POST", body: formData });
-      const data = await res.json();
-      setVerdict(res.ok ? data : { status: "error", reason: errorText(data) });
-    } catch (err) {
-      setVerdict({ status: "error", reason: `Connection error: ${err.message}` });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <form onSubmit={handleCheck} className={`${card} p-4 space-y-3`}>
-      <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-        <ShieldCheckIcon className="w-4 h-4 text-indigo-600" /> Check offline
-      </h3>
-      <input type="file" onChange={(e) => setFile(e.target.files[0] || null)} className="w-full text-xs text-slate-600"
-        title="Empty = the stored certificate" />
-      <input type="datetime-local" value={at} onChange={(e) => setAt(e.target.value)} className={`${input} w-full`}
-        title="Check at this moment (empty = now)" />
-      {verdict && (
-        <div className="flex items-start gap-2 text-[11px] leading-snug text-slate-700">
-          <VerdictBadge status={verdict.status} />
-          <span>{verdict.reason}</span>
-        </div>
-      )}
-      <button type="submit" disabled={busy} className={`${button} w-full`}>
-        {busy ? "Checking..." : file ? "Check file" : "Check stored certificate"}
-      </button>
-    </form>
   );
 }
 
@@ -263,7 +159,7 @@ function CertificateCard({ store }) {
   const cert = store?.certificate;
   const crlStale = store?.crl?.next_update && new Date(store.crl.next_update) < new Date();
   return (
-    <div className={`${card} overflow-hidden`}>
+    <div className={`${card} overflow-hidden h-full flex flex-col`}>
       <div className="px-4 py-3 border-b border-slate-100 flex flex-wrap items-center justify-between gap-2">
         <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
           <ShieldCheckIcon className="w-4 h-4 text-indigo-600" /> Certificate
@@ -281,16 +177,16 @@ function CertificateCard({ store }) {
         </div>
       </div>
       {!cert ? (
-        <p className="text-xs text-slate-400 py-10 text-center">No certificate yet – it arrives once the CA approves the request.</p>
+        <p className="flex-1 flex items-center justify-center text-xs text-slate-400 py-10 text-center">No certificate yet – it arrives once the CA approves the request.</p>
       ) : (
-        <div className="p-4 space-y-4">
+        <div className="p-4 flex-1 flex flex-col gap-4">
           <div className="grid grid-cols-2 gap-x-6 gap-y-3">
             <Field label="Subject">{cn(cert.subject)}</Field>
             <Field label="Serial" mono>{cert.serial_number}</Field>
             <Field label="Valid">{fmtDay(cert.not_before)} – {fmtDay(cert.not_after)}</Field>
             <Field label="Installed">{fmtDate(cert.installed_at)}</Field>
           </div>
-          <div className="flex items-center justify-between gap-4 pt-3 border-t border-slate-100">
+          <div className="mt-auto flex items-center justify-between gap-4 pt-3 border-t border-slate-100">
             <span className="text-[11px] text-slate-500">{cert.verdict?.reason}</span>
             <a href="/api/certs/certificate"
               className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200">
@@ -311,12 +207,10 @@ function CertificatesPanel() {
   }, []);
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 items-start">
-      <div className="lg:col-span-2"><CertificateCard store={store} /></div>
-      <div className="space-y-5">
+    <div className="grid grid-cols-1 md:grid-cols-5 gap-5">
+      <div className="md:col-span-3"><CertificateCard store={store} /></div>
+      <div className="md:col-span-2">
         <RequestCard store={store} onChanged={setStore} />
-        <CrlUploadCard onStored={setStore} />
-        <CheckCard />
       </div>
     </div>
   );
@@ -325,6 +219,9 @@ function CertificatesPanel() {
 function NeighboursPanel({ peers }) {
   return (
     <div className={`${card} overflow-hidden`}>
+      <h3 className="text-sm font-semibold text-slate-900 flex items-center gap-2 px-4 pt-4 pb-2">
+        <RadioIcon className="w-4 h-4 text-indigo-600" /> Radio neighbours ({peers.length})
+      </h3>
       <table className="w-full text-xs">
         <thead className="text-[11px] text-slate-400 bg-slate-50/60">
           <tr>
@@ -351,7 +248,6 @@ function NeighboursPanel({ peers }) {
 
 function App() {
   const [status, setStatus] = useState(null);
-  const [activeTab, setActiveTab] = useState("certificates");
 
   useEffect(() => {
     const load = () => fetch("/api/status").then((res) => res.json()).then(setStatus).catch(() => {});
@@ -370,27 +266,17 @@ function App() {
 
   const peers = status.peers || [];
   const online = Boolean(status.has_internet ?? status.has_default_gateway);
-  const tabs = [["certificates", "Certificates"], ["neighbours", `Radio neighbours (${peers.length})`]];
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 antialiased font-sans">
       <nav className="bg-white border-b border-slate-200">
-        <div className="max-w-7xl mx-auto px-6 py-2.5 flex flex-wrap items-center gap-x-6 gap-y-2">
+        <div className="max-w-5xl mx-auto px-6 py-2.5 flex flex-wrap items-center gap-x-6 gap-y-2">
           <div className="flex items-center gap-2">
             <RadioIcon className="w-5 h-5 text-indigo-600" />
             <h1 className="text-sm font-bold text-slate-900">{status.node_name}</h1>
             <span className="text-[11px] font-mono text-slate-400" title="P2P address">
               {(status.local_ips || []).join(", ") || "no radio link"}
             </span>
-          </div>
-          <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200">
-            {tabs.map(([id, label]) => (
-              <button key={id} onClick={() => setActiveTab(id)}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer ${
-                  activeTab === id ? "bg-white text-slate-900 shadow-xs" : "text-slate-600 hover:text-slate-900"}`}>
-                {label}
-              </button>
-            ))}
           </div>
           <span className={`ml-auto inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full border ${
             online ? "text-emerald-700 bg-emerald-50 border-emerald-200" : "text-rose-700 bg-rose-50 border-rose-200"}`}
@@ -401,9 +287,9 @@ function App() {
         </div>
       </nav>
 
-      <main className="max-w-7xl mx-auto px-6 py-5">
-        {activeTab === "certificates" && <CertificatesPanel />}
-        {activeTab === "neighbours" && <NeighboursPanel peers={peers} />}
+      <main className="max-w-5xl mx-auto px-6 py-5 space-y-5">
+        <CertificatesPanel />
+        <NeighboursPanel peers={peers} />
       </main>
     </div>
   );

@@ -20,13 +20,14 @@ from fastapi.staticfiles import StaticFiles
 
 import config
 from routers import auth
+from routers import messages
 from routers import pki as pki_api
 
 app = FastAPI(
     title=f"Edge app API: {config.NODE_NAME}",
     description=(
         f"Edge app {config.APP_ID} of node {config.NODE_ID}: offline certificate verification and "
-        f"challenge-response authentication with other edge apps."
+        f"challenge-response authentication with other edge apps, messages encrypted for their certificates."
     ),
     version="1.0.0",
 )
@@ -45,6 +46,7 @@ def root_page():
 
 app.include_router(pki_api.router)
 app.include_router(auth.router)
+app.include_router(messages.router)
 
 
 if __name__ == "__main__":

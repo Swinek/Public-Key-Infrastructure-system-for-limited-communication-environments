@@ -11,6 +11,8 @@ Layout of DATA_DIR/certs/ (PEM for certificates and keys, DER for the CRL):
     key.pem     its private key (mode 0600)
     meta.json   installation time of the certificate
     pending_key.pem, pending.csr, pending.json   new key + request waiting for the CA (enroll.py)
+    peers/<CN>.pem   certificates of other nodes (public, from radio neighbours - pki_sync.py), so that this
+                     node's edge app can encrypt for a node that is out of range
 
 The edge client never signs anything. On upload it checks that the key matches the certificate and that the
 certificate and the CRL come from the stored CA; at any time the certificate (or any other one) can be checked
@@ -21,6 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import threading
 from datetime import datetime, timezone
@@ -45,6 +48,8 @@ META_FILE = "meta.json"
 PENDING_KEY_FILE = "pending_key.pem"
 PENDING_CSR_FILE = "pending.csr"
 PENDING_META_FILE = "pending.json"
+PEERS_DIR = "peers"
+NODE_CN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")  # CN of a node certificate, used as a file name
 
 
 class CertStoreError(ValueError):
@@ -96,6 +101,11 @@ def key_fingerprint(public_key) -> str:
     """SHA-256 of SubjectPublicKeyInfo (DER) - the same id of a key in the CSR, at the portal and in the CA."""
     der = public_key.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
     return hashlib.sha256(der).hexdigest()
+
+
+def common_name(cert: x509.Certificate) -> str:
+    attrs = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    return attrs[0].value if attrs else ""
 
 
 def signature_name(obj) -> str:
@@ -206,7 +216,53 @@ class CertStore:
                 "size": len(self.crl_der()),
             },
             "certs": None,  # the portal lists issued certificates; an edge client holds only its own
+            "node_certs": self.node_certificates(),
         }
+
+    # ---- certificates of other nodes (public data from neighbours) ----------------------------
+
+    def peer_certificate(self, cn: str) -> Optional[x509.Certificate]:
+        if not NODE_CN.match(cn):
+            return None
+        data = self._read(f"{PEERS_DIR}/{cn}.pem")
+        return None if data is None else x509.load_pem_x509_certificate(data)
+
+    def node_certificates(self) -> Dict[str, str]:
+        """CN -> serial number of every node certificate held here (own one included), for /pki/summary."""
+        known: Dict[str, str] = {}
+        for path in sorted((self.root / PEERS_DIR).glob("*.pem")):
+            cert = self.peer_certificate(path.stem)
+            if cert is not None:
+                known[path.stem] = str(cert.serial_number)
+        own = self.certificate()
+        if own is not None:
+            known[common_name(own)] = str(own.serial_number)
+        return known
+
+    def node_certificate_der(self, cn: str) -> Optional[bytes]:
+        own = self.certificate()
+        cert = own if own is not None and common_name(own) == cn else self.peer_certificate(cn)
+        return None if cert is None else cert.public_bytes(serialization.Encoding.DER)
+
+    def add_peer_certificate(self, data: bytes, own_cn: str) -> bool:
+        """Stores another node's certificate if it is valid now (Root CA, validity, stored CRL).
+
+        False = the same or an older certificate of that node is already here. A neighbour is not trusted: only
+        the signature of the Root CA and the stored CRL decide."""
+        cert = load_certificate(data)
+        cn = common_name(cert)
+        if not NODE_CN.match(cn) or cn == own_cn:
+            raise CertStoreError(f"Niepoprawny CN certyfikatu węzła: '{cn}'.")
+        verdict = self.check(cert)
+        if not verdict.ok:
+            raise CertStoreError(f"Certyfikat {cn} odrzucony ({verdict.status.value}): {verdict.reason}")
+        with self._lock:
+            current = self.peer_certificate(cn)
+            if current is not None and (current.serial_number == cert.serial_number
+                                        or current.not_valid_before_utc >= cert.not_valid_before_utc):
+                return False
+            atomic_write_bytes(self.root / PEERS_DIR / f"{cn}.pem", _pem(cert))
+        return True
 
     def bundle(self) -> Dict[str, Any]:
         """Everything the edge app needs to use the certificate.

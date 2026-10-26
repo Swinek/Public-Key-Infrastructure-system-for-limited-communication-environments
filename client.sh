@@ -438,6 +438,60 @@ authenticate_apps() {
         -H "Content-Type: application/json" -d "{\"peer\": \"$b\"}" | python3 -m json.tool
 }
 
+# secret <from> <to> "text": edge app <from> encrypts for the certificate of node <to>; its edge client sends
+# the envelope over the radio links (directly or store-and-forward).
+send_secret() {
+    local a b body
+    a=$(app_container "$(require_client "$1")")
+    b=$(require_client "$2")
+    body=$(python3 -c 'import json, sys; print(json.dumps({"to": sys.argv[1], "text": sys.argv[2]}))' "$b" "$3")
+    echo -e "${BLUE}[*] $a encrypts a message for the certificate of $b (radio links)...${NC}"
+    echo "$body" | docker exec -i "$a" curl -s -X POST http://localhost:8000/api/messages/send \
+        -H "Content-Type: application/json" --data-binary @- | python3 -m json.tool
+}
+
+# node-certs <N>: certificates of other nodes held by edge client N (they travel with the PKI sync).
+show_node_certs() {
+    local targets
+    targets=$(resolve_targets "${1:-all}") || exit 1
+    for client in $targets; do
+        echo -e "\n${BLUE}=== NODE CERTIFICATES HELD BY $client ===${NC}"
+        docker exec "$client" curl -s http://localhost:8000/api/certs/nodes | python3 -c '
+import json, sys
+certs = json.load(sys.stdin)["certificates"]
+if not certs:
+    print("  (none)")
+for c in certs:
+    print("  %-10s serial %s  %s" % (c["cn"], c["serial_number"], c["verdict"]["status"]))
+' || true
+    done
+}
+
+# secret-inbox <N>: envelopes held by node N, opened by edge app N with its own private key where possible.
+show_secret_inbox() {
+    local targets
+    targets=$(resolve_targets "${1:-all}") || exit 1
+    for client in $targets; do
+        local app
+        app=$(app_container "$client")
+        echo -e "\n${BLUE}=== ENCRYPTED MESSAGES HELD BY $app ===${NC}"
+        docker exec "$app" curl -s http://localhost:8000/api/messages/inbox | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+if not data["messages"]:
+    print("  (none)")
+for m in data["messages"]:
+    print("  %s -> %s  [%s]  route %s  %s" % (m["from"], m["to"], m["role"], " -> ".join(m["route"]), m["at"]))
+    if m["readable"]:
+        print("    TEXT:   " + m["text"])
+        print("    SENDER: %s %s" % ("VERIFIED" if m["sender_verified"] else "NOT VERIFIED -", m["sender_reason"]))
+    else:
+        print("    CIPHER: " + m["ciphertext"][:64] + "...")
+        print("    " + m["reason"])
+' || true
+    done
+}
+
 show_app_pki() {
     local targets
     targets=$(resolve_targets "${1:-all}") || exit 1
@@ -543,6 +597,9 @@ Certificates (held by the edge client, obtained automatically, used by the edge 
   ./client.sh fetch 1                  app_1 takes the certificate from edge client 1 (auth does it itself)
   ./client.sh pki [1|2|3|all]          PKI store of the edge app(s)
   ./client.sh auth 1 2                 app_1 and app_2 authenticate each other (challenge-response, app_net)
+  ./client.sh node-certs [1|2|3|all]   Certificates of other nodes held by the edge client(s)
+  ./client.sh secret 1 3 "text"        app_1 encrypts for the certificate of node 3, sent over the radio links
+  ./client.sh secret-inbox [1|2|3|all] Encrypted messages held by node(s): text for the recipient, else ciphertext
   ./client.sh app-logs [1|2|3]         Follow edge app uvicorn logs
 EOF
 }
@@ -665,6 +722,19 @@ case "$1" in
             exit 1
         fi
         authenticate_apps "$2" "$3"
+        ;;
+    secret)
+        if [ -z "$2" ] || [ -z "$3" ] || [ -z "$4" ]; then
+            echo -e "${RED}[ERROR] Usage: ./client.sh secret <from> <to> \"text\"   (e.g. ./client.sh secret 1 3 \"hello\")${NC}"
+            exit 1
+        fi
+        send_secret "$2" "$3" "$4"
+        ;;
+    node-certs)
+        show_node_certs "${2:-all}"
+        ;;
+    secret-inbox)
+        show_secret_inbox "${2:-all}"
         ;;
     app-logs)
         docker logs -f "$(app_container "$(require_client "${2:-1}")")"

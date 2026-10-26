@@ -14,6 +14,10 @@ Root CA: only one matching CA_FINGERPRINT, pinned at deployment, is accepted - f
 Without the pin no CA is taken (no trust on first use: whoever came first could plant their own CA).
 
 A newly stored CRL is announced to the other neighbours, which pull it from here (CRL travels hop by hop).
+
+Node certificates travel the same way: the summary lists CN -> serial of every node certificate the peer holds
+(its own included), and this node pulls only the ones it does not have (GET /pki/node-cert/<CN>). Each is stored
+only if valid against the Root CA and the stored CRL. The edge app needs them to encrypt for a node out of range.
 """
 from __future__ import annotations
 
@@ -138,12 +142,56 @@ def sync_crl(peer: Dict[str, Any], info: Optional[Dict[str, Any]]) -> Optional[s
     return "stored"
 
 
+def sync_node_certs(peer: Dict[str, Any], info: Any) -> Optional[str]:
+    """Returns 'stored' (at least one new node certificate), 'same', or None when nothing was done."""
+    if not isinstance(info, dict):
+        return None  # the portal (or an older node) does not list node certificates
+    store = certs.get_store()
+    if store.ca() is None:
+        return None
+    known = store.node_certificates()
+    crl = store.crl()
+    stored: List[str] = []
+    errors: List[str] = []
+    for cn, serial in info.items():
+        if cn == config.NODE_ID or not certs.NODE_CN.match(str(cn)) or known.get(cn) == str(serial):
+            continue
+        number = wire.optional_int(serial)
+        if crl is not None and number is not None and crl.get_revoked_certificate_by_serial_number(number):
+            continue  # revoked according to the stored CRL: not worth the radio link
+
+        try:
+            fetched = _download(peer, f"/pki/node-cert/{cn}", "node_cert", None, serial)
+        except PkiSyncError as exc:
+            errors.append(str(exc))
+            continue
+        try:
+            added = store.add_peer_certificate(fetched.body, config.NODE_ID)
+        except certs.CertStoreError as exc:
+            transfers.record("node_cert", "in", peer["id"], len(fetched.body), fetched.wire_bytes, status="rejected",
+                             encoding="DER", number=serial, note=str(exc)[:200])
+            errors.append(f"certyfikat {cn} od {peer['id']}: {exc}")
+            continue
+        transfers.record("node_cert", "in", peer["id"], len(fetched.body), fetched.wire_bytes,
+                         status="ok" if added else "skipped", encoding="DER", number=serial,
+                         note=None if added else "not newer than the stored certificate")
+        if added:
+            stored.append(cn)
+            print(f"[PKI SYNC] Certificate of {cn} ({serial}) stored from {peer['id']}")
+    if stored:
+        contact.announce(f"node-certs-{len(known) + len(stored)}", exclude=peer["id"])
+    if errors:
+        raise PkiSyncError("; ".join(errors))
+    return "stored" if stored else "same"
+
+
 def exchange(peer: Dict[str, Any]) -> Dict[str, Optional[str]]:
-    """Contact handler: summary, then the Root CA and the CRL if this node needs them."""
+    """Contact handler: summary, then the Root CA, the CRL and node certificates if this node needs them."""
     summary = _summary(peer)
     result: Dict[str, Optional[str]] = {}
     errors: List[str] = []
-    for name, step in (("ca", sync_ca), ("crl", sync_crl)):  # CA first: the CRL is checked against it
+    # CA first: the CRL is checked against it; node certificates last: they are checked against the newest CRL
+    for name, step in (("ca", sync_ca), ("crl", sync_crl), ("node_certs", sync_node_certs)):
         try:
             result[name] = step(peer, summary.get(name))
         except PkiSyncError as exc:
