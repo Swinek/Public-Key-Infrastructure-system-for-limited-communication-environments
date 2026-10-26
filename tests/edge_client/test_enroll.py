@@ -137,3 +137,28 @@ def test_radio_contact_relays_the_request_instead_of_contacting_the_portal(node,
     assert node.exchange(NEIGHBOUR) is None and len(saf.queue()) == 1  # drugi kontakt nie dubluje wniosku
     # Węzeł dostał internet: ten sam klucz idzie bezpośrednio (portal nie zna jeszcze wniosku).
     assert node.exchange(PORTAL) == "submitted" and list(portal.requests) == [pending["key_fingerprint"]]
+
+
+def test_operator_request_keeps_the_pending_request_filed_after_revocation(node, portal, ca, monkeypatch):
+    contact = importlib.import_module("contact")
+    monkeypatch.setattr(contact, "on_wan", lambda wait=False: node.exchange(PORTAL))
+    cert, key = ca.issue("client_1")
+    _store().set_certificate(pem(cert), key_pem(key))
+    _store().update_crl(der(ca.crl(revoked=[cert], number=3)))
+    assert node.exchange(PORTAL) == "submitted"  # automatyczny wniosek po odwołaniu
+    filed = _store().pending()["key_fingerprint"]
+
+    assert node.request_now()["key_fingerprint"] == filed  # „New key + request” nie wymienia klucza
+    assert list(portal.requests) == [filed]
+    portal.approve()
+    assert node.exchange(PORTAL) == "installed"  # zatwierdzony wniosek daje ważny certyfikat
+
+
+def test_operator_request_after_rejection_uses_a_new_key(node, portal, monkeypatch):
+    contact = importlib.import_module("contact")
+    monkeypatch.setattr(contact, "on_wan", lambda wait=False: node.exchange(PORTAL))
+    node.exchange(PORTAL)
+    rejected = _store().pending()["key_fingerprint"]
+    portal.reject()
+    node.exchange(PORTAL)
+    assert node.request_now()["key_fingerprint"] != rejected

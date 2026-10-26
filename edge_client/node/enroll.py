@@ -141,9 +141,14 @@ def exchange(peer: Dict[str, Any]) -> Optional[str]:
 
 
 def request_now() -> Dict[str, Any]:
-    """Operator's 'new request' (also after a rejection): new key + CSR, sent on the next WAN contact."""
+    """Operator's 'new request' (also after a rejection): new key + CSR, sent on the next WAN contact.
+
+    A request still waiting for the CA (e.g. filed automatically after the revocation) is kept: a new key would
+    make the certificate approved for the old one useless, and the portal accepts one pending request per node."""
     store = certs.get_store()
-    request = store.new_request(config.NODE_ID)
+    request = store.pending()
+    if request is None or request.get("status") == "REJECTED":
+        request = store.new_request(config.NODE_ID)
     contact.on_wan(wait=True)  # portal reachable: the request goes out now
     if (store.pending() or {}).get("status") == "NEW" and neighbours.current():
         relay(store)  # no internet: with the neighbours in range; otherwise on the next contact
