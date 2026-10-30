@@ -51,6 +51,7 @@ COLLIDING_MODULES = (
     "wire",
     "transfers",
     "pki_sync",
+    "peer_state",
     "saf",
     "announce",
     "enroll",

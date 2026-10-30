@@ -19,6 +19,7 @@ app (pki/verifier.py). The edge app verifies everything again before using it.
 """
 from __future__ import annotations
 
+import zlib
 import hashlib
 import json
 import shutil
@@ -34,6 +35,8 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 import config
+from pki.delta import CRLCache, der, effective_entries, encode_state
+from pki.store import PkiError
 from pki.verifier import Verdict, verify
 from utils import atomic_write_bytes
 
@@ -108,6 +111,7 @@ class CertStore:
         self.root = Path(root)
         self.pin = pin.replace(":", "").strip().lower()
         self._lock = threading.Lock()
+        self.revocations = CRLCache(self.root)
         self._migrate_versions()
 
     def _migrate_versions(self) -> None:
@@ -137,9 +141,23 @@ class CertStore:
         data = self._read(CA_FILE)
         return None if data is None else x509.load_pem_x509_certificate(data)
 
-    def crl(self) -> Optional[x509.CertificateRevocationList]:
-        data = self._read(CRL_FILE)
-        return None if data is None else x509.load_der_x509_crl(data)
+    def crl(self):
+        return self.revocations.read()[0]
+
+    def delta(self):
+        return self.revocations.read()[1]
+
+    def revocation_number(self):
+        return self.revocations.current_number()
+
+    def update_revocation(self, data, kind="full", expected=None):
+        ca = self.ca()
+        if ca is None:
+            raise CertStoreError("Brak certyfikatu Root CA.")
+        try:
+            return self.revocations.update(data, ca, kind, expected)
+        except PkiError as exc:
+            raise CertStoreError(str(exc)) from exc
 
     def certificate(self) -> Optional[x509.Certificate]:
         data = self._read(CERT_FILE)
@@ -150,7 +168,7 @@ class CertStore:
 
     def check(self, cert: x509.Certificate, now: Optional[datetime] = None) -> Verdict:
         """Offline check against the stored Root CA and CRL (no network)."""
-        return verify(cert, self.ca(), self.crl(), now or datetime.now(timezone.utc))
+        return verify(cert, self.ca(), self.crl(), now or datetime.now(timezone.utc), self.delta())
 
     def status(self) -> Dict[str, Any]:
         """Certificate metadata with its current verdict, Root CA and CRL - never the private key."""
@@ -174,10 +192,12 @@ class CertStore:
                 "not_after": ca.not_valid_after_utc.isoformat(),
             },
             "crl": None if crl is None else {
-                "number": _crl_number(crl),
-                "this_update": crl.last_update_utc.isoformat(),
-                "next_update": crl.next_update_utc.isoformat() if crl.next_update_utc else None,
-                "revoked_count": len(crl),
+                "number": self.revocation_number(),
+                "base_number": _crl_number(crl),
+                "has_delta": self.delta() is not None,
+                "this_update": (self.delta() if self.delta() is not None else crl).last_update_utc.isoformat(),
+                "next_update": (self.delta() if self.delta() is not None else crl).next_update_utc.isoformat(),
+                "revoked_count": len(effective_entries(crl, self.delta())),
             },
         }
 
@@ -186,7 +206,8 @@ class CertStore:
         return None if ca is None else ca.public_bytes(serialization.Encoding.DER)
 
     def crl_der(self) -> Optional[bytes]:
-        return self._read(CRL_FILE)
+        base = self.crl()
+        return None if base is None else der(base)
 
     def summary(self) -> Dict[str, Any]:
         """The same metadata as the portal's /pki/summary: a peer compares numbers before downloading anything."""
@@ -199,11 +220,15 @@ class CertStore:
                 "size": len(self.ca_der()),
             },
             "crl": None if crl is None else {
-                "number": _crl_number(crl),
-                "this_update": crl.last_update_utc.isoformat(),
-                "next_update": crl.next_update_utc.isoformat() if crl.next_update_utc else None,
-                "revoked_count": len(crl),
+                "number": self.revocation_number(),
+                "base_number": _crl_number(crl),
+                "has_delta": self.delta() is not None,
+                "this_update": (self.delta() if self.delta() is not None else crl).last_update_utc.isoformat(),
+                "next_update": (self.delta() if self.delta() is not None else crl).next_update_utc.isoformat(),
+                "revoked_count": len(effective_entries(crl, self.delta())),
                 "size": len(self.crl_der()),
+                "zlib_size": len(zlib.compress(self.crl_der())),
+                "updates": [meta for meta, _ in self.revocations.objects()],
             },
             "certs": None,  # the portal lists issued certificates; an edge client holds only its own
         }
@@ -213,12 +238,13 @@ class CertStore:
 
         Contains the private key - served only to this node's edge app (see routers/certs.py).
         """
-        ca, crl = self._read(CA_FILE), self._read(CRL_FILE)
+        ca, crl = self._read(CA_FILE), self.crl_der()
         cert, key = self._read(CERT_FILE), self._read(KEY_FILE)
         return {
             "ca": None if ca is None else ca.decode(),
             "certificate": None if cert is None else cert.decode(),
             "private_key": None if key is None else key.decode(),
+            "crl_state": None if crl is None or self.delta() is None else encode_state(self.crl(), self.delta()).decode(),
             "crl_pem": None if crl is None else x509.load_der_x509_crl(crl).public_bytes(serialization.Encoding.PEM).decode(),
         }
 
@@ -325,22 +351,7 @@ class CertStore:
         return True
 
     def update_crl(self, data: bytes) -> bool:
-        """Stores a CRL signed by the stored CA if its CRLNumber is higher. False = same or older (skipped)."""
-        ca = self.ca()
-        if ca is None:
-            raise CertStoreError("Brak certyfikatu Root CA – nie można sprawdzić CRL.")
-        crl = _load_crl(data)
-        if crl.issuer != ca.subject or not crl.is_signature_valid(ca.public_key()):
-            raise CertStoreError("CRL nie jest podpisana przez zapisany Root CA.")
-        number = _crl_number(crl)
-        if number is None:
-            raise CertStoreError("CRL nie ma numeru (CRLNumber).")
-        with self._lock:
-            current = self.crl()
-            if current is not None and number <= (_crl_number(current) or -1):
-                return False
-            atomic_write_bytes(self.root / CRL_FILE, crl.public_bytes(serialization.Encoding.DER))
-        return True
+        return self.update_revocation(data)
 
 
 _store: Optional[CertStore] = None

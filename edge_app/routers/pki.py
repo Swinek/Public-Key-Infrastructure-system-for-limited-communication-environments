@@ -38,7 +38,7 @@ def current_source() -> Optional[Dict[str, Any]]:
 def _status(now: datetime) -> Dict[str, Any]:
     store = pki.get_store()
     cert = store.node_certificate()
-    own = None if cert is None else pki.verify(cert, store.ca(), store.crl(), now).to_dict()
+    own = None if cert is None else pki.verify(cert, store.ca(), store.crl(), now, store.delta()).to_dict()
     return {
         "node_id": config.NODE_ID,
         "node_name": config.NODE_NAME,
@@ -51,9 +51,9 @@ def _status(now: datetime) -> Dict[str, Any]:
 
 
 def install_objects(ca: Optional[bytes], cert: Optional[bytes], key: Optional[bytes],
-                    crl: Optional[bytes]) -> Tuple[List[str], List[str]]:
+                    crl: Optional[bytes], crl_state: Optional[bytes] = None) -> Tuple[List[str], List[str]]:
     """Verifies and stores what came from the edge client. Returns (installed, warnings)."""
-    for field, data in (("ca", ca), ("cert", cert), ("key", key), ("crl", crl)):
+    for field, data in (("ca", ca), ("cert", cert), ("key", key), ("crl", crl), ("crl_state", crl_state)):
         if data is not None and len(data) > MAX_OBJECT_BYTES:
             raise HTTPException(status_code=413, detail=f"'{field}' przekracza {MAX_OBJECT_BYTES} B.")
     if (cert is None) != (key is None):
@@ -71,8 +71,10 @@ def install_objects(ca: Optional[bytes], cert: Optional[bytes], key: Optional[by
             installed.append("cert")
             if _common_name(node_cert) != config.NODE_ID:
                 warnings.append(f"CN certyfikatu ('{_common_name(node_cert)}') różni się od NODE_ID ('{config.NODE_ID}').")
-        if crl is not None:
-            if store.update_crl(crl):
+        if crl is not None or crl_state is not None:
+            changed = (store.update_revocation(crl_state, "bundle") if crl_state is not None
+                       else store.update_crl(crl))
+            if changed:
                 installed.append("crl")
             else:
                 warnings.append("CRL pominięta: Edge app ma już tę samą lub nowszą listę.")
@@ -106,7 +108,7 @@ def take_certificate() -> Dict[str, Any]:
     if bundle.get("certificate") is None:
         raise HTTPException(status_code=404, detail="Edge client nie ma jeszcze certyfikatu.")
     installed, warnings = install_objects(as_bytes("ca"), as_bytes("certificate"), as_bytes("private_key"),
-                                          as_bytes("crl_pem"))
+                                          as_bytes("crl_pem"), as_bytes("crl_state"))
 
     serial = str(pki.get_store().node_certificate().serial_number)
     source = {"serial_number": serial, "fetched_at": datetime.now(timezone.utc).isoformat()}

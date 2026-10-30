@@ -514,3 +514,102 @@ Pełna dokumentacja: Swagger pod `/docs` każdej usługi. Najważniejsze endpoin
 | `POST` | `/api/contact/wan`, `/api/contact/announce`; `GET` `/api/contact/events` | węzeł | Kontakt WAN / „mam nowe dane” / historia kontaktów |
 | `POST` | `/api/saf/offer`; `GET` `/api/saf/items/{id}/content`, `/api/saf/queue` | węzeł | Store-and-forward |
 | `GET` / `DELETE` | `/api/stats/transfers` | węzeł | Rejestr bajtów (`?format=csv`) / wyczyszczenie |
+
+
+## Kompresja transferu CRL
+
+Portal i Edge client udostępniają `zlib_size` w `/pki/summary` oraz skompresowaną CRL
+przez `/pki/crl?compression=zlib`. Odbiorca pobiera zlib tylko wtedy, gdy deklarowany
+rozmiar jest mniejszy od DER. Brak tego pola oznacza dotychczasowy transfer DER.
+Po rozpakowaniu weryfikacja podpisu CA i numeru CRL działa jak wcześniej.
+Limit obejmuje zarówno pobierane bajty, jak i rozpakowaną zawartość.
+Statystyki transferów pokazują `DER+zlib`, rozmiar skompresowanej treści i oszczędność
+w `saved_bytes`; `wire_bytes` szacuje HTTP, bez narzutu TCP/IP.
+
+Pomiar rozmiaru danych (bez uruchamiania sieci):
+
+```bash
+python scripts/measure_crl_compression.py
+```
+
+Skrypt generuje tymczasowe dane i wypisuje CSV dla 0, 1, 10, 100 i 1000 odwołań.
+Nie korzysta z klucza produkcyjnego CA. Rozmiary zależą od danych i podpisu ECDSA.
+Pomiar rozmiaru nie mierzy opóźnienia ani rzeczywistego ruchu sieciowego.
+Do pomiarów sieciowych użyj `./client.sh stats-reset`, wykonaj scenariusz aktualizacji
+CRL, a następnie `./client.sh stats csv`. Porównuj ten sam zestaw CRL i zdarzeń połączeń.
+
+
+## Delty CRL, wygasłe wpisy i pamięć sąsiadów
+
+CA wystawia równocześnie pełną CRL i podpisane skumulowane delty dla maksymalnie
+`CRL_DELTA_BASES` poprzednich pełnych baz (domyślnie 8, zakres 1–32).
+Delty i pełna CRL z tego samego wystawienia mają ten sam CRLNumber i thisUpdate.
+Nowa tabela `crl_deltas` oraz jej uprawnienia powstają automatycznie przy starcie CA,
+również w istniejącej bazie. Zachowywane są delty tylko bieżącej wersji; historia pełnych
+CRL pozostaje w `crls`.
+
+`/pki/summary` zawiera listę `crl.updates`: rodzaj (`full`, `delta` albo `bundle`),
+SHA-256, numer, minimalną bazę, rozmiar i rozmiar po zlib.
+Odbiorca porównuje rzeczywiste rozmiary oferowanych reprezentacji po kompresji.
+Delta jest kandydatem tylko gdy jej baza ≤ numer przechowywanej pełnej CRL < numer delty.
+Przy braku zgodnej delty pobierana jest pełna lista lub pakiet bazy z deltą.
+Treść jest pobierana przez `/pki/updates/{sha256}` (opcjonalnie `?compression=zlib`).
+Hash zabezpiecza spójność pobrania; zaufanie zapewniają dopiero podpisy CA.
+Zapowiedziany numer musi zgadzać się z numerem w podpisanym obiekcie.
+
+Edge client i Edge app zapisują atomowo `crl_state.json`: oryginalną podpisaną pełną
+bazę oraz opcjonalną podpisaną deltę (DER kodowany base64 wewnątrz pliku JSON).
+Nie tworzą nowej podpisanej CRL i nie posiadają klucza CA. Weryfikator offline sprawdza
+oba podpisy, numery, wystawcę i AKI. Status oraz pola aktualności pochodzą z delty;
+`removeFromCRL` usuwa wpis z lokalnego widoku. Obsługiwany jest pełny zakres bezpośrednich
+CRL jednego Root CA; częściowe/pośrednie CRL oraz nieobsługiwane krytyczne rozszerzenia
+są odrzucane. Samodzielna delta bez zgodnej bazy nie wystarcza.
+
+Węzeł mający tylko bazę i deltę przekazuje je dalej bez zmian jako `bundle`, jeśli
+odbiorca nie ma zgodnej bazy. `/pki/crl` nadal zwraca wyłącznie oryginalną pełną bazę
+(z jej rzeczywistym numerem), a `crl.number` w summary/status oznacza numer efektywnego
+stanu; `base_number` wskazuje pełną bazę. Wszystkie komponenty należy przebudować razem,
+żeby Edge app korzystała z nowego pola `crl_state` w lokalnym pakiecie danych PKI.
+
+Przy tworzeniu pełnej CRL CA pomija odwołania dopiero po `valid_to` +
+`CRL_EXPIRY_MARGIN_HOURS` (domyślnie 24 godziny). Brak daty wygaśnięcia oznacza zachowanie
+wpisu. Dodatkowo wpis musi wcześniej znaleźć się na co najmniej jednej planowej CRL
+wystawionej po wygaśnięciu certyfikatu (`crl_expiry_seen_at` w bazie), zgodnie z
+[RFC 5280 §3.3](https://www.rfc-editor.org/rfc/rfc5280.html#section-3.3).
+Ręczne odświeżenia nie odsuwają terminu planowej CRL. Rekordy certyfikatów nie są usuwane z bazy. Delty zawierają podpisane
+`removeFromCRL` dla usuniętych wpisów, także względem późniejszych zgodnych baz.
+Margines chroni jedynie przed ograniczonym cofnięciem zegara; nie rozwiązuje dowolnej
+rozbieżności czasu. Parametry można ustawić w `.env` przed przebudową centrum.
+
+`pki_peers.json` w trwałym wolumenie węzła przechowuje `observed`, `confirmed` i
+`pending` dla sąsiadów. Każdy kontakt nadal wymienia summary, więc utrata danych u sąsiada
+nie jest maskowana przez starą tabelę. `confirmed` jest zapisywane przez nadawcę dopiero
+po otrzymaniu `/pki/ack`, które odbiorca wysyła po weryfikacji i trwałym zapisie.
+Potwierdzenie jest pomocniczą deklaracją sąsiada, nie dowodem kryptograficznym ani
+podstawą zaufania do CRL. Nieudane powiadomienia są pamiętane i ponawiane po kontakcie.
+Podgląd: `http://localhost:3011/pki/peers` (analogicznie 3012 i 3013).
+
+W CSV `crl_delta` oznacza pobranie delty, `crl_full` pełną CRL albo pakiet, `crl_ack`
+potwierdzenie. Dla udanego pobrania nowego protokołu `saved_bytes` porównuje przesłaną
+treść z najmniejszą nieskompresowaną pełną odpowiedzią dostępną u nadawcy (pełna CRL
+lub pakiet). Dla `skipped` oznacza pominięte pobranie. Tych dwóch wielkości nie należy
+interpretować jako samego zysku z kompresji. Nie sumuj obu kierunków transferu jako
+osobnych transmisji. `wire_bytes` pozostaje szacunkiem HTTP bez TCP/IP.
+
+Sprawdzenie lokalne:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/edge_client tests/edge_app -q
+```
+
+Pełne testy w Linuxie, z OpenSSL i uprawnieniami POSIX:
+
+```bash
+docker compose --profile test build tests
+docker compose --profile test run --rm tests pytest tests/edge_client tests/edge_app tests/admin -q
+```
+
+Opcjonalny test rzeczywistego PostgreSQL (osobny schemat, cała transakcja wycofywana):
+ustaw `PKI_TEST_DATABASE_URL` w kontenerze testowym na połączenie testowe i uruchom
+`tests/admin/test_crl_database.py`. Test tworzy tymczasowe CA i sztuczne odwołania,
+sprawdza rozmiar delty, usuwanie wygasłych wpisów i okno baz. Nie zmienia danych aplikacji.

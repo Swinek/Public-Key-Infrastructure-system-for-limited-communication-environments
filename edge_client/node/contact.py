@@ -22,6 +22,7 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Callable, Deque, Dict, List, Optional, Set
 
+import peer_state
 import config
 import transfers
 import wire
@@ -119,10 +120,16 @@ def on_wan(wait: bool = False) -> Dict[str, Any]:
 
 
 def on_neighbour(entry: Dict[str, Any]) -> Dict[str, Any]:
-    return trigger(neighbour_peer(entry))
+    event = trigger(neighbour_peer(entry))
+    pending = peer_state.read().get(entry["id"], {}).get("pending")
+    if pending is not None:
+        threading.Thread(target=_announce_to, args=(entry, f"crl-{pending}"), daemon=True).start()
+    return event
 
 
 def _announce_to(neighbour: Dict[str, Any], reason: str) -> None:
+    if reason.startswith("crl-") and reason[4:].isdigit():
+        peer_state.pending(neighbour["id"], int(reason[4:]))
     try:
         fetched = wire.post_json(f"{neighbour_peer(neighbour)['url']}/api/contact/announce", {"reason": reason}, 1024)
         transfers.record("announce", "out", neighbour["id"], 0, fetched.wire_bytes, note=reason)
@@ -134,6 +141,11 @@ def announce(reason: str, exclude: Optional[str] = None, wait: bool = False) -> 
     """Tells the current neighbours (except `exclude`, the source of the data) that this node has new data."""
     import neighbours  # neighbours imports this module
     targets = [n for n in neighbours.current() if n["id"] != exclude]
+    if reason.startswith("crl-") and reason[4:].isdigit():
+        # Zaległość również dla wcześniej spotkanych, obecnie odłączonych sąsiadów.
+        known = set(peer_state.read()) | {n["id"] for n in targets}
+        for peer in known - {exclude, PORTAL_ID}:
+            peer_state.pending(peer, int(reason[4:]))
     for n in targets:
         print(f"[CONTACT] announce '{reason}' -> {n['id']}")
         if wait:

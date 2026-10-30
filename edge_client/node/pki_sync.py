@@ -17,6 +17,11 @@ A newly stored CRL is announced to the other neighbours, which pull it from here
 """
 from __future__ import annotations
 
+import zlib
+import hashlib
+import re
+import peer_state
+
 from typing import Any, Dict, List, Optional
 
 from cryptography import x509
@@ -100,36 +105,59 @@ def sync_ca(peer: Dict[str, Any], info: Optional[Dict[str, Any]]) -> Optional[st
 def sync_crl(peer: Dict[str, Any], info: Optional[Dict[str, Any]]) -> Optional[str]:
     """Returns 'stored', 'same' (peer not newer), or None when nothing was done."""
     if not info:
+        peer_state.observe(peer["id"], None)
         return None
+    peer_number = wire.optional_int(info.get("number"))
+    peer_state.observe(peer["id"], peer_number)
     store = certs.get_store()
     if store.ca() is None:
         print(f"[PKI SYNC] {peer['id']} has CRL #{info.get('number')}, but there is no Root CA to check it")
         return None
-    peer_number = wire.optional_int(info.get("number"))
     current = store.crl()
-    local_number = certs.crl_number(current) if current is not None else None
+    local_number = store.revocation_number()
     if peer_number is None:
         raise PkiSyncError(f"{peer['id']}: summary bez numeru CRL")
     if local_number is not None and peer_number <= local_number:
         if peer_number == local_number:
             transfers.record("crl_full", "in", peer["id"], status="skipped", number=peer_number,
                              saved_bytes=wire.optional_int(info.get("size")) or 0, note="peer has the same CRL")
+        if info.get("updates") is not None:
+            _ack(peer, local_number)
         return "same"
-    fetched = _download(peer, "/pki/crl", "crl_full", info.get("size"), peer_number)
+    if info.get("updates") is not None:
+        return _sync_update(peer, info, store, peer_number)
+    raw_limit = _limit(info.get("size"))
+    compressed_size = wire.optional_int(info.get("zlib_size"))
+    compressed = compressed_size is not None and 0 < compressed_size < raw_limit
+    encoding = "DER+zlib" if compressed else "DER"
+    path = "/pki/crl?compression=zlib" if compressed else "/pki/crl"
+    fetched = _download(peer, path, "crl_full", compressed_size if compressed else info.get("size"), peer_number)
+    body = fetched.body
+    if compressed:
+        try:
+            decoder = zlib.decompressobj()
+            body = decoder.decompress(body, raw_limit + 1)
+            if len(body) > raw_limit or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+                raise ValueError("niepełna, nadmiarowa lub zbyt duża zawartość zlib")
+        except (zlib.error, ValueError) as exc:
+            transfers.record("crl_full", "in", peer["id"], len(fetched.body), fetched.wire_bytes,
+                             status="rejected", encoding=encoding, number=peer_number, note=str(exc))
+            raise PkiSyncError(f"CRL od {peer['id']} odrzucona: {exc}") from exc
     try:
-        crl = x509.load_der_x509_crl(fetched.body)
+        crl = x509.load_der_x509_crl(body)
         signature = certs.signature_name(crl)
     except ValueError:
         signature = None
     try:
-        stored = store.update_crl(fetched.body)
+        stored = store.update_crl(body)
     except certs.CertStoreError as exc:
         transfers.record("crl_full", "in", peer["id"], len(fetched.body), fetched.wire_bytes, status="rejected",
-                         encoding="DER", signature=signature, number=peer_number, note=str(exc))
+                         encoding=encoding, signature=signature, number=peer_number, note=str(exc))
         raise PkiSyncError(f"CRL od {peer['id']} odrzucona: {exc}") from exc
-    number = certs.crl_number(store.crl())
+    number = store.revocation_number()
     transfers.record("crl_full", "in", peer["id"], len(fetched.body), fetched.wire_bytes,
-                     status="ok" if stored else "skipped", encoding="DER", signature=signature, number=number,
+                     status="ok" if stored else "skipped", encoding=encoding, signature=signature, number=number,
+                     saved_bytes=max(0, len(body) - len(fetched.body)) if stored else 0,
                      note=None if stored else "not newer than the stored CRL")
     if not stored:
         return "same"
@@ -137,6 +165,72 @@ def sync_crl(peer: Dict[str, Any], info: Optional[Dict[str, Any]]) -> Optional[s
     contact.announce(f"crl-{number}", exclude=peer["id"])
     return "stored"
 
+
+
+def _ack(peer, number):
+    if peer.get("kind") != "neighbour" or number is None:
+        return
+    try:
+        fetched = wire.post_json(wire.peer_url(peer, "/pki/ack"), {"number": number}, 256)
+        transfers.record("crl_ack", "out", peer["id"], 0, fetched.wire_bytes, number=number)
+    except wire.WireError as exc:
+        # Niepotwierdzona wersja nie jest zapamiętywana przez nadawcę. Kolejny kontakt ponawia ACK.
+        print(f"[PKI] Potwierdzenie do {peer['id']} nie dotarło: {exc}")
+
+
+def _sync_update(peer, info, store, target):
+    candidates = info.get("updates")
+    if not isinstance(candidates, list) or len(candidates) > 34:
+        raise PkiSyncError("Niepoprawna lista aktualizacji CRL")
+    local_base = None if store.crl() is None else certs.crl_number(store.crl())
+    choices = []
+    for obj in candidates:
+        if not isinstance(obj, dict) or obj.get("number") != target:
+            continue
+        kind = obj.get("kind")
+        floor = wire.optional_int(obj.get("base"))
+        if kind == "delta" and (floor is None or local_base is None or not floor <= local_base < target):
+            continue
+        if kind not in ("full", "delta", "bundle") or not re.fullmatch(r"[0-9a-f]{64}", str(obj.get("id", ""))):
+            continue
+        size = wire.optional_int(obj.get("size"))
+        zipped = wire.optional_int(obj.get("zlib_size"))
+        if size is None or not 0 < size <= config.MAX_PKI_OBJECT_BYTES:
+            continue
+        compressed = zipped is not None and 0 < zipped < size
+        choices.append((zipped if compressed else size, obj, compressed))
+    if not choices:
+        raise PkiSyncError("Brak zgodnej i mieszczącej się w limicie aktualizacji CRL")
+    _, obj, compressed = min(choices, key=lambda v: v[0])
+    kind = "crl_delta" if obj["kind"] == "delta" else "crl_full"
+    path = f"/pki/updates/{obj['id']}" + ("?compression=zlib" if compressed else "")
+    encoding = ("JSON" if obj["kind"] == "bundle" else "DER") + ("+zlib" if compressed else "")
+    fetched = _download(peer, path, kind, obj["zlib_size"] if compressed else obj["size"], target)
+    body = fetched.body
+    try:
+        if compressed:
+            decoder = zlib.decompressobj()
+            body = decoder.decompress(body, obj["size"] + 1)
+            if len(body) > obj["size"] or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+                raise ValueError("Przekroczony limit lub niepoprawna zawartość zlib")
+        if hashlib.sha256(body).hexdigest() != obj["id"]:
+            raise ValueError("SHA-256 aktualizacji różni się od zapowiedzianego")
+        stored = store.update_revocation(body, obj["kind"], expected=target)
+    except (ValueError, zlib.error) as exc:
+        transfers.record(kind, "in", peer["id"], len(fetched.body), fetched.wire_bytes,
+                         status="rejected", encoding=encoding, number=target, note=str(exc))
+        raise PkiSyncError(f"Aktualizacja CRL odrzucona: {exc}") from exc
+    # ACK wyłącznie po weryfikacji podpisów i atomowym zapisie (także przy wyścigu z innym odbiorcą).
+    _ack(peer, store.revocation_number())
+    reference = min((candidate[1]["size"] for candidate in choices if candidate[1]["kind"] != "delta"),
+                    default=len(body))
+    transfers.record(kind, "in", peer["id"], len(fetched.body), fetched.wire_bytes,
+                     status="ok" if stored else "skipped", encoding=encoding, number=store.revocation_number(),
+                     saved_bytes=max(0, reference - len(fetched.body)) if stored else 0,
+                     note=f"{obj['kind']}, base={obj.get('base')}")
+    if stored:
+        contact.announce(f"crl-{target}", exclude=peer["id"])
+    return "stored" if stored else "same"
 
 def exchange(peer: Dict[str, Any]) -> Dict[str, Optional[str]]:
     """Contact handler: summary, then the Root CA and the CRL if this node needs them."""

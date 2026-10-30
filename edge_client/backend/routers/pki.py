@@ -4,14 +4,15 @@ Obiekty domyślnie w DER (mniej bajtów na wolnym łączu), PEM przez ?format=pe
 ETag = CRLNumber / fingerprint, więc węzeł z aktualną wersją dostaje 304 bez treści.
 """
 
+import zlib
 import logging
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Query, Request, Response, HTTPException
 from fastapi.responses import JSONResponse
 
 import announce
 from database import get_pool, record_to_dict, records_to_list
-from store import latest_ca, latest_crl, pem_to_der, pki_object_response
+from store import crl_update_objects, latest_ca, latest_crl, pem_to_der, pki_object_response
 
 logger = logging.getLogger("pki_edge_client_backend.pki")
 
@@ -30,6 +31,7 @@ async def get_summary(request: Request):
     async with pool.acquire() as conn:
         ca = await latest_ca(conn)
         crl = await latest_crl(conn)
+        updates = await crl_update_objects(conn, crl)
         certs = await conn.fetchrow(
             """SELECT COUNT(*) FILTER (WHERE status = 'ACTIVE') AS active,
                       COUNT(*) FILTER (WHERE status = 'REVOKED') AS revoked,
@@ -49,6 +51,8 @@ async def get_summary(request: Request):
             "next_update": crl["next_update"].isoformat(),
             "revoked_count": crl["revoked_count"],
             "size": len(crl["crl_der"]),
+            "zlib_size": len(zlib.compress(bytes(crl["crl_der"]))),
+            "updates": [meta for meta, _ in updates],
         },
         "certs": record_to_dict(certs),
     }
@@ -73,7 +77,8 @@ async def get_ca(request: Request, format: str = FORMAT):
 
 
 @router.get("/crl")
-async def get_crl(request: Request, format: str = FORMAT):
+async def get_crl(request: Request, format: str = FORMAT,
+                  compression: str = Query("none", pattern="^(none|zlib)$")):
     """Ostatnia CRL podpisana przez CA (DER lub PEM), ETag = CRLNumber."""
     pool = get_pool()
     async with pool.acquire() as conn:
@@ -81,7 +86,7 @@ async def get_crl(request: Request, format: str = FORMAT):
     if crl is None:
         return JSONResponse(status_code=404, content={"error": "CRL not issued yet"})
     return pki_object_response(request, bytes(crl["crl_der"]), format, "X509 CRL",
-                               "crl", "application/pkix-crl", f"crl-{crl['crl_number']}")
+                               "crl", "application/pkix-crl", f"crl-{crl['crl_number']}", compression=compression)
 
 
 @router.get("/certs")
@@ -113,3 +118,16 @@ async def get_cert(request: Request, serial_number: str, format: str = FORMAT):
         return JSONResponse(status_code=404, content={"error": "Certificate not found"})
     return pki_object_response(request, pem_to_der(row["certificate_pem"]), format, "CERTIFICATE",
                                f"cert_{serial_number}", "application/pkix-cert", row["fingerprint"][:16])
+
+
+@router.get("/updates/{object_id}")
+async def get_crl_update(object_id: str, compression: str = Query("none", pattern="^(none|zlib)$")):
+    """Niezmienny obiekt identyfikowany SHA-256, pełna CRL albo podpisana delta."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        objects = await crl_update_objects(conn)
+    for meta, data in objects:
+        if meta["id"] == object_id:
+            return Response(zlib.compress(data) if compression == "zlib" else data,
+                            media_type="application/zlib" if compression == "zlib" else "application/pkix-crl")
+    raise HTTPException(status_code=404, detail="Wersja CRL nie jest już dostępna; pobierz nowe summary.")

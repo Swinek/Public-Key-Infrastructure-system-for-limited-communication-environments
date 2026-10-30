@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from types import SimpleNamespace
 
 import pytest
 from cryptography import x509
@@ -208,3 +209,44 @@ def test_pki_endpoints_serve_the_stored_originals(pki_client, node, ca):
     served = [e for e in _transfers() if e["direction"] == "out"]
     assert {e["kind"] for e in served} == {"summary", "crl_full", "ca_cert"}
     assert any(e["status"] == "skipped" and e["saved_bytes"] == len(der(crl)) for e in served)
+
+# Kompresja jest opcjonalna: starsze węzły nadal otrzymują oryginalny DER.
+def test_compressed_endpoint_preserves_signed_der(pki_client, node, ca):
+    import zlib
+    crl = ca.crl(number=10, revoked=[SimpleNamespace(serial_number=i) for i in range(1, 100)])
+    _store(node).set_ca(pem(ca.cert))
+    _store(node).update_crl(der(crl))
+    response = pki_client.get("/pki/crl?compression=zlib")
+    assert zlib.decompress(response.content) == der(crl)
+    assert response.headers["content-type"] == "application/zlib"
+    assert response.headers["etag"] != pki_client.get("/pki/crl").headers["etag"]
+    assert pki_client.get("/pki/crl?compression=zlib", headers={"If-None-Match": response.headers["etag"]}).status_code == 304
+
+
+@pytest.mark.parametrize("invalid", [False, True, "oversized", "trailing", "forged"])
+def test_compressed_sync_is_bounded_and_verified(node, monkeypatch, ca, invalid):
+    import zlib
+    _store(node).set_ca(pem(ca.cert))
+    _store(node).update_crl(der(ca.crl(number=1)))
+    crl = (TestCA() if invalid == "forged" else ca).crl(number=10, revoked=[SimpleNamespace(serial_number=i) for i in range(1, 100)])
+    body = zlib.compress(der(crl))
+    if invalid is True:
+        body = body[:-3]
+    elif invalid == "trailing":
+        body += b"junk"
+    wire = importlib.import_module("wire")
+    info = {"number": 10, "size": len(der(crl)), "zlib_size": len(body)}
+    if invalid == "oversized":
+        body = zlib.compress(b"x" * 100000)
+        info["zlib_size"] = len(body)
+    peer = FakePeer(wire, {"/pki/crl?compression=zlib": body})
+    monkeypatch.setattr(wire, "get", peer.get)
+    if invalid:
+        with pytest.raises(node.PkiSyncError):
+            node.sync_crl(NEIGHBOUR, info)
+        assert importlib.import_module("certs").crl_number(_store(node).crl()) == 1
+    else:
+        assert node.sync_crl(NEIGHBOUR, info) == "stored"
+        assert _store(node).crl_der() == der(crl)
+        record = _transfers()[-1]
+        assert record["payload_bytes"] == len(body) and record["encoding"] == "DER+zlib"

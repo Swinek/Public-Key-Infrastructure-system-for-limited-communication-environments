@@ -10,12 +10,15 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
+from cryptography import x509
 import asyncpg
 from cryptography.hazmat.primitives import hashes, serialization
 
-from pki.ca import generate_crl, load_ca_certificate
+from pki.ca import generate_delta_crl, generate_crl, load_ca_certificate
 
 logger = logging.getLogger("pki_backend.store")
+
+CRL_DELTA_BASES = max(1, min(32, int(os.getenv("CRL_DELTA_BASES", "8"))))
 
 CRL_REISSUE_HOURS = int(os.getenv("CRL_REISSUE_HOURS", "24"))
 CRL_CHECK_INTERVAL_SECONDS = int(os.getenv("CRL_CHECK_INTERVAL_SECONDS", "600"))
@@ -33,6 +36,7 @@ CRL_META_COLUMNS = """crl_number, ca_fingerprint, this_update, next_update, revo
 # Wnioski CSR węzłów (Etap 3b). Portal może je tylko dodawać i czytać; decyzję podejmuje administrator w CA.
 # Wykonywane przy każdym starcie (init.sql działa tylko na pustej bazie), więc istniejąca baza też dostaje tabelę.
 CSR_SCHEMA = """
+ALTER TABLE certificates ADD COLUMN IF NOT EXISTS crl_expiry_seen_at TIMESTAMPTZ;
 CREATE TABLE IF NOT EXISTS csr_requests (
     id SERIAL PRIMARY KEY,
     node_id VARCHAR(50) NOT NULL,
@@ -56,6 +60,15 @@ CERT_NOTIFY_CHANNEL = "cert_issued"
 
 async def ensure_csr_schema(conn: asyncpg.Connection) -> None:
     await conn.execute(CSR_SCHEMA)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS crl_deltas (
+            crl_number BIGINT NOT NULL REFERENCES crls(crl_number),
+            base_number BIGINT NOT NULL REFERENCES crls(crl_number),
+            crl_der BYTEA NOT NULL,
+            PRIMARY KEY (crl_number, base_number)
+        );
+        GRANT SELECT ON crl_deltas TO pki_portal;
+    """)
 
 
 async def register_ca_certificate(conn: asyncpg.Connection) -> str:
@@ -93,7 +106,7 @@ async def _issue_crl_locked(conn: asyncpg.Connection, trigger: str) -> dict:
     await conn.execute("SELECT pg_advisory_xact_lock($1)", _CRL_LOCK_KEY)
     crl_number = await conn.fetchval("SELECT COALESCE(MAX(crl_number), 0) + 1 FROM crls")
     revoked_rows = await conn.fetch(
-        "SELECT serial_number, revoked_at FROM certificates WHERE status = 'REVOKED' ORDER BY revoked_at"
+        "SELECT serial_number, revoked_at, valid_to, crl_expiry_seen_at AS expiry_crl_seen_at FROM certificates WHERE status = 'REVOKED' ORDER BY revoked_at"
     )
     crl = generate_crl([dict(r) for r in revoked_rows], crl_number)
     ca_fingerprint = load_ca_certificate().fingerprint(hashes.SHA256()).hex()
@@ -111,6 +124,22 @@ async def _issue_crl_locked(conn: asyncpg.Connection, trigger: str) -> dict:
         crl.public_bytes(serialization.Encoding.DER),
         trigger,
     )
+    # RFC 5280 §3.3: usunięcie dopiero po przynajmniej jednej planowej CRL po notAfter.
+    if trigger == "scheduled":
+        await conn.execute(
+            "UPDATE certificates SET crl_expiry_seen_at = $1 WHERE status = 'REVOKED' "
+            "AND valid_to < $1 AND crl_expiry_seen_at IS NULL AND serial_number = ANY($2::text[])",
+            crl.last_update_utc, [str(entry.serial_number) for entry in crl])
+    # Ograniczone okno baz. Dla każdej bazy komplet zmian (bez łańcucha delt).
+    history_rows = await conn.fetch(
+        "SELECT crl_number, crl_der FROM crls WHERE crl_number < $1 AND ca_fingerprint = $2 "
+        "ORDER BY crl_number DESC LIMIT $3", crl_number, ca_fingerprint, CRL_DELTA_BASES)
+    snapshots = [(r["crl_number"], x509.load_der_x509_crl(bytes(r["crl_der"]))) for r in history_rows]
+    for base_id, base in snapshots:
+        delta = generate_delta_crl(base, crl, [c for n, c in snapshots if n >= base_id])
+        await conn.execute("INSERT INTO crl_deltas (crl_number, base_number, crl_der) VALUES ($1, $2, $3)",
+                           crl_number, base_id, delta.public_bytes(serialization.Encoding.DER))
+    await conn.execute("DELETE FROM crl_deltas WHERE crl_number <> $1", crl_number)
     # Impuls dla węzłów: portal (edge_client/backend/announce.py) nasłuchuje na tym kanale i od razu wyzwala
     # kontakt WAN u węzłów, które mają internet. NOTIFY w transakcji dochodzi dopiero po jej zatwierdzeniu.
     await conn.execute("SELECT pg_notify($1, $2)", CRL_NOTIFY_CHANNEL, str(crl_number))
@@ -132,8 +161,13 @@ async def ensure_fresh_crl(conn: asyncpg.Connection) -> None:
         await issue_crl(conn, "startup")
     elif latest["ca_fingerprint"] != ca_fingerprint:
         await issue_crl(conn, "new_ca")
-    elif now - latest["this_update"] >= timedelta(hours=CRL_REISSUE_HOURS):
-        await issue_crl(conn, "scheduled")
+    else:
+        # Ręczne odświeżenia nie mogą bez końca odsuwać wystawienia planowej listy.
+        scheduled = await conn.fetchval(
+            "SELECT COALESCE(MAX(this_update) FILTER (WHERE trigger = 'scheduled'), MIN(this_update)) "
+            "FROM crls WHERE ca_fingerprint = $1", ca_fingerprint)
+        if scheduled is not None and now - scheduled >= timedelta(hours=CRL_REISSUE_HOURS):
+            await issue_crl(conn, "scheduled")
 
 
 async def crl_scheduler(pool: asyncpg.Pool) -> None:

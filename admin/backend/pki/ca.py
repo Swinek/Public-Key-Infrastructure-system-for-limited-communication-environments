@@ -21,6 +21,8 @@ CA_CERT_PATH = PKI_DIR / "ca_certificate.pem"
 
 # Okres ważności CRL (nextUpdate - thisUpdate). Dłuższy niż okres ponownego podpisywania
 # (CRL_REISSUE_HOURS w pki/store.py), żeby węzeł odcięty na kilka dni miał nadal ważną listę.
+CRL_EXPIRY_MARGIN_HOURS = max(0, int(os.getenv("CRL_EXPIRY_MARGIN_HOURS", "24")))
+
 CRL_VALIDITY_HOURS = int(os.getenv("CRL_VALIDITY_HOURS", "168"))
 
 # ECDSA P-256 + SHA-256 dla CA i certyfikatów (decyzja 2026-10-22: podpis ~72 B zamiast 512 B przy RSA-4096).
@@ -330,6 +332,12 @@ def generate_crl(revoked_records: list[dict], crl_number: int,
     )
 
     for item in revoked_records:
+        valid_to = item.get("valid_to")
+        if valid_to is not None:
+            if valid_to.tzinfo is None:
+                valid_to = valid_to.replace(tzinfo=timezone.utc)
+            if item.get("expiry_crl_seen_at") is not None and now > valid_to + timedelta(hours=CRL_EXPIRY_MARGIN_HOURS):
+                continue
         try:
             serial_int = int(str(item.get("serial_number", "")).strip())
         except ValueError:
@@ -350,3 +358,34 @@ def generate_crl(revoked_records: list[dict], crl_number: int,
         builder = builder.add_revoked_certificate(revoked_cert_builder.build())
 
     return builder.sign(ca_private_key, HASH)
+
+
+def generate_delta_crl(base, current, history=()):
+    """Skumulowane zmiany od bazy; usunięte wygasłe wpisy jako removeFromCRL."""
+    key, ca = load_ca()
+    minimum = base.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number
+    target = current.extensions.get_extension_for_class(x509.CRLNumber).value.crl_number
+    if minimum >= target or base.issuer != current.issuer:
+        raise ValueError("Niepoprawna baza delty")
+    builder = (x509.CertificateRevocationListBuilder().issuer_name(current.issuer)
+               .last_update(current.last_update_utc).next_update(current.next_update_utc)
+               .add_extension(x509.CRLNumber(target), critical=False)
+               .add_extension(x509.DeltaCRLIndicator(minimum), critical=True)
+               .add_extension(_authority_key_identifier(ca), critical=False))
+    previous = {e.serial_number: e for e in base}
+    for snapshot in history:
+        previous.update({e.serial_number: e for e in snapshot})
+    latest = {e.serial_number: e for e in current}
+    baseline = {e.serial_number: e for e in base}
+    def entry_value(entry):
+        return (entry.revocation_date_utc,
+                [(ext.oid, ext.critical, ext.value) for ext in entry.extensions])
+    for serial, entry in latest.items():
+        if serial not in baseline or entry_value(entry) != entry_value(baseline[serial]):
+            builder = builder.add_revoked_certificate(entry)
+    for serial in previous.keys() - latest.keys():
+        entry = (x509.RevokedCertificateBuilder().serial_number(serial)
+                 .revocation_date(current.last_update_utc)
+                 .add_extension(x509.CRLReason(x509.ReasonFlags.remove_from_crl), critical=False).build())
+        builder = builder.add_revoked_certificate(entry)
+    return builder.sign(key, HASH)

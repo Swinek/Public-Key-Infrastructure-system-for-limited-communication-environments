@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 import config
 
-KINDS = ("summary", "crl_full", "crl_delta", "ca_cert", "cert", "csr", "msg", "file", "saf_offer", "announce")
+KINDS = ("crl_ack", "summary", "crl_full", "crl_delta", "ca_cert", "cert", "csr", "msg", "file", "saf_offer", "announce")
 DIRECTIONS = ("in", "out")
 STATUSES = ("ok", "skipped", "rejected", "aborted")
 
