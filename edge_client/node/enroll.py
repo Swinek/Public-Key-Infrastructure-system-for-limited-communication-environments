@@ -1,26 +1,30 @@
-"""Own certificate of the node, obtained automatically: the key is generated here, the CA approves every request.
+"""Own certificate of the node: the key is generated here, the CA approves every request.
 
-On every WAN contact (contact.py, after pki_sync - the Root CA and the newest CRL are already stored):
-    1. a request is pending  -> GET /pki/csr/<key fingerprint>
-           APPROVED: GET /pki/certs/<serial>, install it if the pinned Root CA signed it for OUR pending key
-           REJECTED: remembered; no new request until the operator asks for one (POST /api/certs/csr)
-           PENDING:  nothing - the CA's decision wakes this node again (impulse cert_issued)
-    2. no request, but the node needs a certificate (none, revoked, from another CA, expiring within
-       RENEW_BEFORE_DAYS) -> new key + CSR (CN = NODE_ID), POST /pki/csr
+A request is filed ONLY by the operator of this node (`client.sh csr N`, POST /api/certs/csr -> request_now).
+The node never files one by itself - not without a certificate, not after a revocation, not before expiry.
+A node without a valid certificate still carries the requests and certificates of other nodes (relay.py,
+saf.py): they are public data signed by their owner / the CA and checked by every carrier, so a carrier
+cannot forge them.
 
-On a radio contact (Stage 3c) the node that needs a certificate and has a request not sent yet (NEW) puts the CSR
-into the store-and-forward queue for the portal and marks it RELAYED; a neighbour with internet hands it over and
-the certificate comes back the same way (relay.py, saf.py). If the node gets internet itself, step 1 continues
-with the same key (the portal accepts the same key idempotently).
+On every WAN contact (contact.py, after pki_sync - the Root CA and the newest CRL are already stored), only when
+this node has a request:
+    unknown to the portal (not sent yet) -> POST /pki/csr
+    known to the portal                  -> GET /pki/csr/<key fingerprint>
+        APPROVED: GET /pki/certs/<serial>, install it if the pinned Root CA signed it for OUR pending key
+        REJECTED: remembered; nothing more until the operator files a new request
+        PENDING:  nothing - the CA's decision wakes this node again (impulse cert_issued)
+
+On a radio contact the node with a request not sent yet (NEW) puts the CSR into the store-and-forward queue for
+the portal and marks it RELAYED; a neighbour with internet hands it over and the certificate comes back the same
+way (relay.py, saf.py). If the node gets internet itself, the WAN step continues with the same key (the portal
+accepts the same key idempotently).
 
 The node never holds two certificates: the current one stays in use until the new one is installed, then it is
 replaced (and the CA revokes the old one). The private key never leaves the node; only the CSR and the
-certificate - public data - travel over the link. Revocation by the administrator therefore does not end in an
-automatic new certificate: the revoked node files a request, and the administrator decides.
+certificate - public data - travel over the link.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 import certs
@@ -34,20 +38,6 @@ import wire
 
 class EnrollError(Exception):
     pass
-
-
-def needs_certificate(store: certs.CertStore, now: Optional[datetime] = None) -> Optional[str]:
-    """Why this node needs a new certificate, or None when the current one is fine."""
-    now = now or datetime.now(timezone.utc)
-    cert = store.certificate()
-    if cert is None:
-        return "no certificate"
-    status = store.check(cert, now).status.value
-    if status in ("revoked", "invalid"):
-        return f"certificate {status}"
-    if cert.not_valid_after_utc - now < timedelta(days=config.RENEW_BEFORE_DAYS):
-        return "certificate expiring"
-    return None
 
 
 def submit(peer: Dict[str, Any], request: Dict[str, Any]) -> Dict[str, Any]:
@@ -86,13 +76,7 @@ def _install(peer: Dict[str, Any], serial: str) -> bool:
 def relay(store: certs.CertStore) -> Optional[str]:
     """Radio contact: a request not sent yet goes to the portal with the neighbours (store-and-forward)."""
     pending = store.pending()
-    if pending is None:
-        reason = needs_certificate(store)
-        if reason is None:
-            return None
-        print(f"[ENROLL] {reason} - new key and CSR (via the neighbours)")
-        pending = store.new_request(config.NODE_ID)
-    if pending.get("status") != "NEW":
+    if pending is None or pending.get("status") != "NEW":  # only the operator's request, and only once
         return None
     item = saf.new_item("csr", saf.PORTAL, content=pending["csr_der"], msg_id=pending["key_fingerprint"])
     store.set_pending_status("RELAYED")
@@ -103,7 +87,7 @@ def relay(store: certs.CertStore) -> Optional[str]:
 
 
 def exchange(peer: Dict[str, Any]) -> Optional[str]:
-    """Contact handler: over WAN follow up the pending request or file a new one; over radio relay it."""
+    """Contact handler: over WAN send / follow up the operator's request; over radio relay it."""
     store = certs.get_store()
     if store.ca() is None:
         return None  # no pinned Root CA yet - nothing to check a certificate against
@@ -132,19 +116,14 @@ def exchange(peer: Dict[str, Any]) -> Optional[str]:
         if status == "REJECTED":
             print(f"[ENROLL] request {pending['key_fingerprint'][:16]}... rejected: {answer.get('reason')}")
         return (status or "pending").lower()
-    reason = needs_certificate(store)
-    if reason is None:
-        return None
-    print(f"[ENROLL] {reason} - new key and CSR")
-    submit(peer, store.new_request(config.NODE_ID))
-    return "submitted"
+    return None  # no request: nothing to send - only the operator files one (request_now)
 
 
 def request_now() -> Dict[str, Any]:
-    """Operator's 'new request' (also after a rejection): new key + CSR, sent on the next WAN contact.
+    """Operator's 'new request' - the only way a request is filed: new key + CSR, sent now or on the next contact.
 
-    A request still waiting for the CA (e.g. filed automatically after the revocation) is kept: a new key would
-    make the certificate approved for the old one useless, and the portal accepts one pending request per node."""
+    A request still waiting for the CA is kept: a new key would make the certificate approved for the old one
+    useless, and the portal accepts one pending request per node."""
     store = certs.get_store()
     request = store.pending()
     if request is None or request.get("status") == "REJECTED":

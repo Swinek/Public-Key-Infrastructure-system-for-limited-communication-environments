@@ -120,6 +120,8 @@ Lista zarejestrowanych węzłów z ich aktualnym certyfikatem (numer seryjny, wa
   i rozsyła ją do węzłów (zob. [Odwoływanie certyfikatów](#odwoływanie-certyfikatów-i-dystrybucja-crl)).
 - Węzeł pojawia się na liście sam, gdy administrator zatwierdzi jego pierwszy wniosek CSR (CN wniosku = nazwa
   węzła). Ręcznie węzły można dodać przez `POST /api/users` (Swagger CA).
+- Panel **nie wystawia certyfikatów bez CSR** – certyfikat powstaje tylko z zatwierdzonego wniosku (zakładka
+  „Wnioski CSR”), więc klucz prywatny węzła nigdy nie trafia do CA.
 
 ### „PKI / CRL”
 Root CA (podmiot, algorytmy, ważność, odcisk SHA-256 – ten sam, który węzły mają przypięty) i bieżąca CRL:
@@ -249,9 +251,11 @@ Klucz prywatny węzła **nigdy nie podróżuje**. Węzeł sam generuje klucz EC 
 dowolnych pośredników.
 
 ### Kiedy węzeł składa wniosek
-- automatycznie, gdy nie ma certyfikatu, jego certyfikat jest odwołany / nie od tego CA albo wygasa w ciągu
-  `RENEW_BEFORE_DAYS` (30) dni,
-- ręcznie: `./client.sh csr N` albo przycisk **„New key + request”** w konsoli (np. po odrzuceniu).
+- **tylko na polecenie operatora**: `./client.sh csr N` albo przycisk **„New key + request”** w konsoli
+  (pierwszy certyfikat, po odwołaniu, po odrzuceniu, przed wygaśnięciem). Węzeł nigdy nie składa wniosku sam,
+  więc `csr 3` daje w panelu CA dokładnie jeden wniosek – od client_3.
+- Węzeł bez (ważnego) certyfikatu nadal przenosi wnioski i certyfikaty innych węzłów: to dane publiczne,
+  podpisane przez ich właściciela / CA i sprawdzane przez każdego przewoźnika, więc nie może ich podrobić.
 
 Do czasu zatwierdzenia nowego wniosku węzeł używa dotychczasowego certyfikatu.
 
@@ -477,7 +481,8 @@ Testy CA generują Root CA w katalogu tymczasowym – nigdy nie dotykają `admin
 podstawiają portal i łącza; `tests/edge_client/test_relay.py` symuluje trzy węzły (wniosek CSR 3 → 2 → 1 →
 portal i certyfikat z powrotem, złośliwi pośrednicy).
 
-Skrypty demonstracji weryfikacji offline przez OpenSSL / Python (wymagają działającego centrum):
+Skrypty demonstracji weryfikacji offline przez OpenSSL / Python (wymagają działającego centrum; certyfikaty
+testowych węzłów uzyskują jak Edge client – lokalny klucz, CSR do portalu, zatwierdzenie przez API CA):
 
 ```bash
 bash scripts/demo_offline_auth.sh

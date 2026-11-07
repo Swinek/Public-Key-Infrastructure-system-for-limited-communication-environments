@@ -8,10 +8,6 @@ class UserCreate(BaseModel):
     role: Optional[str] = "user"
 
 
-class CertificateCreate(BaseModel):
-    userId: int
-
-
 class CsrDecision(BaseModel):
     reason: Optional[str] = None
 

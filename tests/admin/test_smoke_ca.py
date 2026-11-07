@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 
 import pytest
 from cryptography import x509
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 
@@ -25,13 +26,26 @@ def test_ca_is_self_signed_with_ca_basic_constraints(ca_env):
     assert bc.value.ca is True
 
 
-def test_issue_user_certificate_signed_by_ca(ca_env):
-    ca_cert = _load_ca_cert(ca_env)
-    result = ca_env.ca.issue_user_certificate("alice", "alice@example.com")
+def _issue(ca_env, name: str) -> dict:
+    """Certyfikat przez CSR – jedyna ścieżka wystawienia (klucz powstaje u węzła)."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    csr = (x509.CertificateSigningRequestBuilder()
+           .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)]))
+           .sign(key, hashes.SHA256()))
+    return ca_env.ca.sign_csr(csr.public_bytes(serialization.Encoding.DER), name, f"{name}@example.com")
 
-    for key in ("serial_number", "certificate_pem", "private_key_pem",
-                "fingerprint", "valid_from", "valid_to"):
+
+def test_ca_cannot_generate_node_keys(ca_env):
+    assert not hasattr(ca_env.ca, "issue_user_certificate")
+
+
+def test_leaf_certificate_signed_by_ca(ca_env):
+    ca_cert = _load_ca_cert(ca_env)
+    result = _issue(ca_env, "alice")
+
+    for key in ("serial_number", "certificate_pem", "fingerprint", "valid_from", "valid_to"):
         assert key in result
+    assert "private_key_pem" not in result
 
     cert = x509.load_pem_x509_certificate(result["certificate_pem"].encode())
     cert.verify_directly_issued_by(ca_cert)
@@ -39,16 +53,10 @@ def test_issue_user_certificate_signed_by_ca(ca_env):
     assert cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca is False
     assert result["serial_number"] == str(cert.serial_number)
 
-    # Klucz prywatny użytkownika pasuje do certyfikatu.
-    user_key = serialization.load_pem_private_key(
-        result["private_key_pem"].encode(), password=None
-    )
-    assert user_key.public_key().public_numbers() == cert.public_key().public_numbers()
-
 
 def test_crl_contains_revoked_serial_and_skips_invalid(ca_env):
     ca_cert = _load_ca_cert(ca_env)
-    issued = ca_env.ca.issue_user_certificate("bob", "bob@example.com")
+    issued = _issue(ca_env, "bob")
     serial = int(issued["serial_number"])
     revoked_at = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 

@@ -50,7 +50,8 @@ if config.STATIC_DIR.exists():
 def root_page():
     index_path = config.STATIC_DIR / "index.html"
     if index_path.exists():
-        return FileResponse(index_path)
+        # no-cache: the browser always revalidates the page, so a new app.jsx?v=N is picked up on a plain reload.
+        return FileResponse(index_path, headers={"Cache-Control": "no-cache"})
     return {
         "service": "Node API",
         "node_id": config.NODE_ID,

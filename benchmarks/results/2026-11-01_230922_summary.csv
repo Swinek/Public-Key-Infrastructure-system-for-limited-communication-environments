@@ -1,0 +1,4 @@
+algorithm,security_bits,public_key_der_bytes,signature_bytes_min,signature_bytes_max,sign_per_s_median,verify_per_s_median,sign_per_s_min,sign_per_s_max,verify_per_s_min,verify_per_s_max,runs
+RSA-2048,112,294,256,256,1872,63091,1655,2012,58388,69891,5
+RSA-3072,128,422,384,384,640,31942,568,660,25144,33083,5
+ECDSA P-256,128,91,69,72,55527,18492,48469,58993,16584,19504,5

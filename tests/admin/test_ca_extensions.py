@@ -8,8 +8,9 @@ from datetime import datetime, timezone
 
 import pytest
 from cryptography import x509
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 
 
 def _ca_cert(ca_env) -> x509.Certificate:
@@ -18,6 +19,15 @@ def _ca_cert(ca_env) -> x509.Certificate:
 
 def _ext(cert_or_crl, cls):
     return cert_or_crl.extensions.get_extension_for_class(cls)
+
+
+def _issue(ca_env, name: str) -> dict:
+    """Certyfikat przez CSR – jedyna ścieżka wystawienia (klucz powstaje u węzła)."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    csr = (x509.CertificateSigningRequestBuilder()
+           .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)]))
+           .sign(key, hashes.SHA256()))
+    return ca_env.ca.sign_csr(csr.public_bytes(serialization.Encoding.DER), name, f"{name}@example.com")
 
 
 def test_ca_uses_ecdsa_p256_with_ski_and_key_usage(ca_env):
@@ -37,7 +47,7 @@ def test_ca_uses_ecdsa_p256_with_ski_and_key_usage(ca_env):
 def test_leaf_certificate_has_aki_matching_ca_ski(ca_env):
     ca = _ca_cert(ca_env)
     leaf = x509.load_pem_x509_certificate(
-        ca_env.ca.issue_user_certificate("carol", "carol@example.com")["certificate_pem"].encode()
+        _issue(ca_env, "carol")["certificate_pem"].encode()
     )
     ca_ski = _ext(ca, x509.SubjectKeyIdentifier).value.digest
     assert _ext(leaf, x509.AuthorityKeyIdentifier).value.key_identifier == ca_ski
@@ -46,7 +56,7 @@ def test_leaf_certificate_has_aki_matching_ca_ski(ca_env):
 
     ku = _ext(leaf, x509.KeyUsage)
     assert ku.critical
-    assert ku.value.digital_signature
+    assert ku.value.digital_signature and ku.value.key_agreement
     assert not ku.value.key_cert_sign and not ku.value.crl_sign
 
 
@@ -97,8 +107,8 @@ def _openssl_verify(tmp_path, ca_env, leaf_pem: str, crl: x509.CertificateRevoca
 
 @requires_openssl
 def test_openssl_accepts_valid_and_rejects_revoked(tmp_path, ca_env):
-    valid = ca_env.ca.issue_user_certificate("dave", "dave@example.com")
-    revoked = ca_env.ca.issue_user_certificate("eve", "eve@example.com")
+    valid = _issue(ca_env, "dave")
+    revoked = _issue(ca_env, "eve")
     crl = ca_env.ca.generate_crl(
         [{"serial_number": revoked["serial_number"], "revoked_at": datetime.now(timezone.utc)}],
         crl_number=7,

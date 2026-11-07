@@ -1,5 +1,5 @@
-"""Automatyczny certyfikat węzła (edge_client/node/enroll.py): klucz powstaje w węźle, wniosek CSR idzie przy
-kontakcie WAN, certyfikat jest instalowany dopiero po zatwierdzeniu w CA. Portal jest podstawiony (wire)."""
+"""Certyfikat węzła (edge_client/node/enroll.py): wniosek składa wyłącznie operator, klucz powstaje w węźle,
+CSR idzie przy kontakcie WAN, certyfikat jest instalowany dopiero po zatwierdzeniu w CA. Portal podstawiony (wire)."""
 
 from __future__ import annotations
 
@@ -79,7 +79,19 @@ def _store():
     return importlib.import_module("certs").get_store()
 
 
-def test_node_without_certificate_files_a_request_and_installs_after_approval(node, portal):
+def _file():
+    """`client.sh csr 1` bez kontaktu: nowy klucz + wniosek w stanie NEW."""
+    return _store().new_request("client_1")
+
+
+def test_node_without_certificate_files_nothing_by_itself(node, portal):
+    assert node.exchange(PORTAL) is None and node.exchange(NEIGHBOUR) is None
+    assert portal.requests == {} and _store().pending() is None
+    assert importlib.import_module("saf").queue() == []
+
+
+def test_operator_request_is_sent_and_installed_after_approval(node, portal):
+    _file()
     assert node.exchange(PORTAL) == "submitted"
     assert len(portal.requests) == 1 and _store().certificate() is None
     assert node.exchange(PORTAL) == "pending"  # administrator jeszcze nie zdecydował
@@ -92,6 +104,7 @@ def test_node_without_certificate_files_a_request_and_installs_after_approval(no
 
 
 def test_private_key_never_leaves_the_node(node, portal):
+    _file()
     node.exchange(PORTAL)
     sent = [r["csr"] for r in portal.requests.values()]
     assert all(isinstance(c, x509.CertificateSigningRequest) for c in sent)
@@ -102,6 +115,7 @@ def test_private_key_never_leaves_the_node(node, portal):
 
 
 def test_rejected_request_is_not_sent_again(node, portal):
+    _file()
     node.exchange(PORTAL)
     portal.reject()
     assert node.exchange(PORTAL) == "rejected"
@@ -110,6 +124,7 @@ def test_rejected_request_is_not_sent_again(node, portal):
 
 
 def test_certificate_for_another_key_is_not_installed(node, portal, ca):
+    _file()
     node.exchange(PORTAL)
     _, stranger_key = ca.issue("client_1")
     portal.approve(public_key=stranger_key.public_key())
@@ -117,17 +132,20 @@ def test_certificate_for_another_key_is_not_installed(node, portal, ca):
     assert _store().certificate() is None and _store().pending() is not None
 
 
-def test_revoked_certificate_leads_to_a_new_request_not_a_new_certificate(node, portal, ca):
+def test_revoked_certificate_does_not_file_a_request_by_itself(node, portal, ca):
     cert, key = ca.issue("client_1")
     _store().set_certificate(pem(cert), key_pem(key))
     _store().update_crl(der(ca.crl(revoked=[cert], number=3)))
-    assert node.needs_certificate(_store(), NOW) == "certificate revoked"
+    assert _store().check(cert, NOW).status.value == "revoked"
+    assert node.exchange(PORTAL) is None and portal.requests == {}  # decyduje operator, nie węzeł
+    _file()
     assert node.exchange(PORTAL) == "submitted"
     assert _store().certificate().serial_number == cert.serial_number  # stary zostaje do zatwierdzenia nowego
 
 
 def test_radio_contact_relays_the_request_instead_of_contacting_the_portal(node, portal):
     saf = importlib.import_module("saf")
+    _file()
     assert node.exchange(NEIGHBOUR) == "relayed" and portal.requests == {}
     pending = _store().pending()
     assert pending["status"] == "RELAYED"
@@ -139,16 +157,16 @@ def test_radio_contact_relays_the_request_instead_of_contacting_the_portal(node,
     assert node.exchange(PORTAL) == "submitted" and list(portal.requests) == [pending["key_fingerprint"]]
 
 
-def test_operator_request_keeps_the_pending_request_filed_after_revocation(node, portal, ca, monkeypatch):
+def test_second_operator_request_keeps_the_pending_one(node, portal, ca, monkeypatch):
     contact = importlib.import_module("contact")
     monkeypatch.setattr(contact, "on_wan", lambda wait=False: node.exchange(PORTAL))
     cert, key = ca.issue("client_1")
     _store().set_certificate(pem(cert), key_pem(key))
     _store().update_crl(der(ca.crl(revoked=[cert], number=3)))
-    assert node.exchange(PORTAL) == "submitted"  # automatyczny wniosek po odwołaniu
-    filed = _store().pending()["key_fingerprint"]
+    filed = node.request_now()["key_fingerprint"]
+    assert _store().pending()["status"] == "PENDING"
 
-    assert node.request_now()["key_fingerprint"] == filed  # „New key + request” nie wymienia klucza
+    assert node.request_now()["key_fingerprint"] == filed  # drugie „New key + request” nie wymienia klucza
     assert list(portal.requests) == [filed]
     portal.approve()
     assert node.exchange(PORTAL) == "installed"  # zatwierdzony wniosek daje ważny certyfikat
@@ -157,7 +175,7 @@ def test_operator_request_keeps_the_pending_request_filed_after_revocation(node,
 def test_operator_request_after_rejection_uses_a_new_key(node, portal, monkeypatch):
     contact = importlib.import_module("contact")
     monkeypatch.setattr(contact, "on_wan", lambda wait=False: node.exchange(PORTAL))
-    node.exchange(PORTAL)
+    node.request_now()
     rejected = _store().pending()["key_fingerprint"]
     portal.reject()
     node.exchange(PORTAL)

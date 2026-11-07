@@ -1,33 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { 
-  Users, 
-  ShieldCheck, 
-  ShieldAlert, 
-  Trash2, 
-  Search, 
-  CheckCircle, 
-  AlertTriangle, 
-  Download,
+import {
+  Trash2,
+  CheckCircle,
+  AlertTriangle,
   Key
 } from 'lucide-react';
 import PkiPanel from './PkiPanel';
 import CsrPanel from './CsrPanel';
 
 const API_URL = 'http://localhost:5000/api';
-
-const downloadFile = (filename, content, mimeType = 'application/x-pem-file') => {
-  if (!content) return;
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-};
 
 function App() {
   const [users, setUsers] = useState([]);
@@ -38,42 +20,8 @@ function App() {
   const [selectedCertId, setSelectedCertId] = useState(null);
   const [revocationReason, setRevocationReason] = useState('');
 
-  const [searchQuery, setSearchQuery] = useState('');
-  const [newlyIssuedCert, setNewlyIssuedCert] = useState(null);
   const [crlNotice, setCrlNotice] = useState(null);
   const [pkiRefreshKey, setPkiRefreshKey] = useState(0);
-
-  const handleDownloadCaCert = async () => {
-    try {
-      const res = await axios.get(`${API_URL}/certificates/ca/download`, { responseType: 'blob' });
-      const url = URL.createObjectURL(res.data);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'ca_certificate.pem';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      alert('Nie udało się pobrać certyfikatu Root CA.');
-    }
-  };
-
-  const handleDownloadCrl = async () => {
-    try {
-      const res = await axios.get(`${API_URL}/certificates/crl/download`, { responseType: 'blob' });
-      const url = URL.createObjectURL(res.data);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = 'crl.pem';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-    } catch (err) {
-      alert('Nie udało się pobrać listy unieważnień CRL.');
-    }
-  };
 
   useEffect(() => {
     fetchUsers();
@@ -110,21 +58,6 @@ function App() {
     }
   };
 
-  const handleIssueCert = async (userId) => {
-    try {
-      const res = await axios.post(`${API_URL}/certificates`, { userId });
-      fetchUsers();
-      fetchCerts();
-      const targetUser = users.find(u => u.id === userId);
-      setNewlyIssuedCert({
-        ...res.data,
-        targetUsername: targetUser ? targetUser.username : 'node'
-      });
-    } catch (err) {
-      alert(err.response?.data?.error || 'Error generating certificate.');
-    }
-  };
-
   const openRevokeModal = (certId) => {
     setSelectedCertId(certId);
     setRevocationReason('Administrative access revocation');
@@ -147,10 +80,7 @@ function App() {
     }
   };
 
-  const filteredUsers = users.filter(user => 
-    user.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    user.email.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredUsers = users;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 antialiased font-sans">
@@ -166,29 +96,6 @@ function App() {
               Panel Administratora
             </span>
           </div>
-
-          {/* Metrics */}
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-blue-50 border border-blue-100 rounded-lg">
-              <Users className="w-4 h-4 text-blue-600" />
-              <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Total Users</span>
-              <span className="text-sm font-bold text-slate-900">{users.length}</span>
-            </div>
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-100 rounded-lg">
-              <ShieldCheck className="w-4 h-4 text-emerald-600" />
-              <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Active Certificates</span>
-              <span className="text-sm font-bold text-emerald-600">
-                {certs.filter(c => c.status === 'ACTIVE').length}
-              </span>
-            </div>
-            <div className="flex items-center gap-2 px-3 py-1.5 bg-rose-50 border border-rose-100 rounded-lg">
-              <ShieldAlert className="w-4 h-4 text-rose-600" />
-              <span className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Revoked (CRL)</span>
-              <span className="text-sm font-bold text-rose-600">
-                {certs.filter(c => c.status === 'REVOKED').length}
-              </span>
-            </div>
-          </div>
         </div>
       </nav>
 
@@ -199,7 +106,7 @@ function App() {
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
           <div className="flex bg-slate-200/70 p-1 rounded-lg">
             <button 
-              onClick={() => { setActiveTab('users'); setSearchQuery(''); }}
+              onClick={() => setActiveTab('users')}
               className={`px-4 py-2 text-xs font-semibold rounded-md transition-all cursor-pointer ${
                 activeTab === 'users' 
                   ? 'bg-white text-slate-900 shadow-xs' 
@@ -209,7 +116,7 @@ function App() {
               Users & Edge Nodes
             </button>
             <button
-              onClick={() => { setActiveTab('pki'); setSearchQuery(''); }}
+              onClick={() => setActiveTab('pki')}
               className={`px-4 py-2 text-xs font-semibold rounded-md transition-all cursor-pointer ${
                 activeTab === 'pki'
                   ? 'bg-white text-slate-900 shadow-xs'
@@ -219,7 +126,7 @@ function App() {
               PKI / CRL
             </button>
             <button
-              onClick={() => { setActiveTab('csr'); setSearchQuery(''); }}
+              onClick={() => setActiveTab('csr')}
               className={`px-4 py-2 text-xs font-semibold rounded-md transition-all cursor-pointer ${
                 activeTab === 'csr'
                   ? 'bg-white text-slate-900 shadow-xs'
@@ -228,19 +135,6 @@ function App() {
             >
               Wnioski CSR
             </button>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            {activeTab === 'users' && <div className="relative min-w-[240px]">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-              <input 
-                type="text"
-                placeholder="Search by username or email..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:bg-white focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 rounded-lg pl-9 pr-4 py-2 text-xs outline-none transition-all text-slate-900"
-              />
-            </div>}
           </div>
         </div>
 
@@ -294,8 +188,9 @@ function App() {
                       </td>
                       <td className="py-3 px-4 text-right">
                         <div className="flex items-center justify-end gap-2">
-                          {user.cert_status === 'ACTIVE' ? (
-                            <button 
+                          {/* Certyfikat wystawia tylko zatwierdzenie wniosku CSR (zakładka „Wnioski CSR”). */}
+                          {user.cert_status === 'ACTIVE' && (
+                            <button
                               onClick={() => {
                                 const cert = certs.find(c => c.user_id === user.id && c.status === 'ACTIVE');
                                 if (cert) openRevokeModal(cert.id);
@@ -304,14 +199,6 @@ function App() {
                               title="Unieważnij certyfikat (CRL)"
                             >
                               Revoke
-                            </button>
-                          ) : (
-                            <button 
-                              onClick={() => handleIssueCert(user.id)}
-                              className="px-2.5 py-1 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-md border border-emerald-200 font-medium transition-colors cursor-pointer"
-                              title="Wystaw certyfikat X.509"
-                            >
-                              Issue Cert
                             </button>
                           )}
                           <button 
@@ -372,100 +259,6 @@ function App() {
                 className="px-3 py-2 rounded-lg text-xs font-medium text-white bg-rose-600 hover:bg-rose-700 transition-colors shadow-xs cursor-pointer"
               >
                 Confirm Revocation
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Newly Issued Credentials Modal */}
-      {newlyIssuedCert && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
-          <div className="w-full max-w-lg bg-white border border-slate-200 rounded-xl p-6 shadow-xl space-y-4">
-            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-emerald-100 text-emerald-700 rounded-lg">
-                  <ShieldCheck className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-slate-900">
-                    Wydano poświadczenia węzła brzegowego
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Węzeł: <span className="font-semibold text-slate-800">{newlyIssuedCert.targetUsername}</span> &bull; SN: <span className="font-mono">{newlyIssuedCert.serial_number}</span>
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800 flex items-start gap-2.5">
-              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-              <div>
-                <span className="font-semibold">Klucz prywatny jest zwracany jednorazowo!</span>
-                <p className="mt-0.5 text-amber-700">
-                  Zgodnie z zasadami PKI, serwer nie przechowuje klucza prywatnego węzła. Pobierz go teraz i skopiuj na maszynę wirtualną / do stacji polowej, aby umożliwić podpisywanie transmisji radiowej.
-                </p>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <p className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
-                Pobierz pakiet tożsamości do maszyny wirtualnej (offline):
-              </p>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <button
-                  onClick={() => downloadFile(`${newlyIssuedCert.targetUsername}_cert.pem`, newlyIssuedCert.certificate_pem)}
-                  className="flex items-center gap-2 p-2.5 rounded-lg border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-semibold transition-colors cursor-pointer text-left"
-                >
-                  <Download className="w-4 h-4 shrink-0" />
-                  <div>
-                    <p className="font-bold">Certyfikat węzła</p>
-                    <p className="text-[10px] text-indigo-500 font-normal">{newlyIssuedCert.targetUsername}_cert.pem</p>
-                  </div>
-                </button>
-
-                <button
-                  onClick={() => downloadFile(`${newlyIssuedCert.targetUsername}_private.key`, newlyIssuedCert.private_key, 'application/x-pem-file')}
-                  className="flex items-center gap-2 p-2.5 rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-semibold transition-colors cursor-pointer text-left"
-                >
-                  <Key className="w-4 h-4 shrink-0" />
-                  <div>
-                    <p className="font-bold">Klucz prywatny węzła</p>
-                    <p className="text-[10px] text-rose-500 font-normal">{newlyIssuedCert.targetUsername}_private.key</p>
-                  </div>
-                </button>
-
-                <button
-                  onClick={handleDownloadCaCert}
-                  className="flex items-center gap-2 p-2.5 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-xs font-semibold transition-colors cursor-pointer text-left"
-                >
-                  <ShieldCheck className="w-4 h-4 shrink-0" />
-                  <div>
-                    <p className="font-bold">Certyfikat Root CA</p>
-                    <p className="text-[10px] text-emerald-500 font-normal">ca_certificate.pem</p>
-                  </div>
-                </button>
-
-                <button
-                  onClick={handleDownloadCrl}
-                  className="flex items-center gap-2 p-2.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 text-xs font-semibold transition-colors cursor-pointer text-left"
-                >
-                  <ShieldAlert className="w-4 h-4 shrink-0" />
-                  <div>
-                    <p className="font-bold">Lista odwołań CRL</p>
-                    <p className="text-[10px] text-slate-500 font-normal">crl.pem</p>
-                  </div>
-                </button>
-              </div>
-            </div>
-
-            <div className="border-t border-slate-100 pt-3 flex justify-end">
-              <button
-                onClick={() => setNewlyIssuedCert(null)}
-                className="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-slate-800 hover:bg-slate-900 transition-colors cursor-pointer"
-              >
-                Zamknij okno
               </button>
             </div>
           </div>

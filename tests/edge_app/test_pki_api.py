@@ -72,11 +72,48 @@ def _edge_client_returns(module, monkeypatch, status_code, body, calls=None):
     monkeypatch.setattr(module.requests, "get", fake_get)
 
 
-def test_status_of_empty_store(client):
+def _edge_client_down(module, monkeypatch):
+    def down(*args, **kwargs):
+        raise requests.ConnectionError("no route")
+    monkeypatch.setattr(module.requests, "get", down)
+
+
+def test_status_of_empty_store(client, module, monkeypatch):
+    _edge_client_down(module, monkeypatch)
     body = client.get("/api/pki/status").json()
     assert body["node_id"] == "client_1"
     assert body["ca"] is None and body["node"] is None and body["crl"] is None
     assert body["own_certificate"] is None and body["source"] is None
+    assert "Edge client" in body["warning"]
+
+
+def test_status_refreshes_from_edge_client(client, module, monkeypatch, ca, node):
+    """Panel nie pokazuje starej kopii: nowy certyfikat i CRL Edge clienta są widoczne od razu."""
+    old, old_key = node
+    _install(module, ca=der(ca.cert), cert=der(old), key=key_pem(old_key), crl=der(ca.crl(number=1)))
+    new, new_key = ca.issue("client_1")
+    crl = ca.crl(number=9, this_update=NOW - DAY, next_update=NOW + 3650 * DAY)
+    _edge_client_returns(module, monkeypatch, 200, _bundle(ca, new, new_key, crl))
+    body = client.get("/api/pki/status").json()
+    assert body["node"]["serial_number"] == str(new.serial_number) and body["crl"]["number"] == 9
+    assert body["own_certificate"]["status"] == "valid" and body["warning"] is None
+
+
+def test_status_offline_shows_last_copy_with_warning(client, module, monkeypatch, ca, node):
+    cert, key = node
+    _install(module, ca=der(ca.cert), cert=der(cert), key=key_pem(key))
+    _edge_client_down(module, monkeypatch)
+    body = client.get("/api/pki/status").json()
+    assert body["node"]["serial_number"] == str(cert.serial_number) and "ostatnio pobranego" in body["warning"]
+
+
+def test_fetch_reports_only_what_changed(client, module, monkeypatch, ca, node):
+    cert, key = node
+    crl = ca.crl(number=3, this_update=NOW - DAY, next_update=NOW + 3650 * DAY)
+    _edge_client_returns(module, monkeypatch, 200, _bundle(ca, cert, key, crl))
+    assert client.post("/api/pki/fetch").json()["installed"] == ["ca", "cert", "crl"]
+    again = client.post("/api/pki/fetch").json()
+    assert again["installed"] == [] and again["status"]["node"]["serial_number"] == str(cert.serial_number)
 
 
 def test_fetch_installs_certificate_from_edge_client(client, module, monkeypatch, ca, node):

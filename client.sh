@@ -550,8 +550,9 @@ show_help() {
 ============================================================
 Initial radio links: client_1 --p2p_12-- client_2 --p2p_23-- client_3
 Neighbours are greeted once when a link comes up; messages and files go only to nodes in radio range.
-Each edge client holds one certificate: it generates the key itself, sends a CSR on WAN contact and installs
-the certificate once the administrator approves it in the CA panel. Its edge app uses it only to authenticate.
+Each edge client holds one certificate: only on `csr N` (never by itself) it generates the key, sends the CSR
+on WAN contact or via neighbours and installs the certificate once the administrator approves it in the CA panel.
+Its edge app uses it only to authenticate.
 
 Lifecycle and status:
   ./client.sh up [--offline|--online]  Start containers (background)

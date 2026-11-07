@@ -68,7 +68,8 @@ class TestCA:
         return self.issue_for(key.public_key(), cn, not_before, not_after, serial), key
 
     def issue_for(self, public_key, cn: str = "client_1", not_before: datetime = NOW - DAY,
-                  not_after: datetime = NOW + 365 * DAY, serial: Optional[int] = None) -> x509.Certificate:
+                  not_after: datetime = NOW + 365 * DAY, serial: Optional[int] = None,
+                  key_agreement: bool = True) -> x509.Certificate:
         """Certyfikat na podany klucz publiczny (jak CA po zatwierdzeniu wniosku CSR)."""
         return (
             x509.CertificateBuilder()
@@ -81,7 +82,7 @@ class TestCA:
             .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
             .add_extension(x509.KeyUsage(
                 digital_signature=True, content_commitment=False, key_encipherment=False,
-                data_encipherment=False, key_agreement=True, key_cert_sign=False, crl_sign=False,
+                data_encipherment=False, key_agreement=key_agreement, key_cert_sign=False, crl_sign=False,
                 encipher_only=False, decipher_only=False), critical=True)
             .add_extension(self._aki(), critical=False)
             .add_extension(x509.SubjectKeyIdentifier.from_public_key(public_key), critical=False)

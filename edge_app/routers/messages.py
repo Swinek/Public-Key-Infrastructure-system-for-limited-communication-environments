@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import requests
+from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import NameOID
 from fastapi import APIRouter, HTTPException
@@ -115,7 +116,19 @@ def _recipient_certificate(node: str):
     if _common_name(cert) != node:
         raise HTTPException(status_code=403, detail=f"Certyfikat należy do '{_common_name(cert) or '?'}', "
                                                     f"a nie do {node} – nie szyfruję.")
+    _require_key_agreement(cert, node)
     return cert, verdict
+
+
+def _require_key_agreement(cert, node: str) -> None:
+    """ECIES uses the recipient key for ECDH, which RFC 5280 4.2.1.3 allows only with KeyUsage keyAgreement."""
+    try:
+        allowed = cert.extensions.get_extension_for_class(x509.KeyUsage).value.key_agreement
+    except x509.ExtensionNotFound:
+        allowed = False
+    if not allowed:
+        raise HTTPException(status_code=403, detail=f"Certyfikat odbiorcy {node} nie ma KeyUsage keyAgreement "
+                                                    f"(klucz nie jest przeznaczony do ECDH) – nie szyfruję.")
 
 
 def _envelope(text: Any) -> Optional[Envelope]:
@@ -162,14 +175,26 @@ def _open(env: Envelope) -> Dict[str, Any]:
         payload = json.loads(inner)
         text = base64.b64decode(payload["text"], validate=True)
     except (ecies.DecryptionError, ValueError, TypeError, KeyError) as exc:
+        own = pki.get_store().node_certificate()
+        if own is not None and str(own.serial_number) != env.recipient_serial:
+            # The node never keeps an old key: a message for the previous certificate cannot be read any more.
+            return {"readable": False, "reason": f"Zaszyfrowana dla poprzedniego certyfikatu tego węzła "
+                                                 f"(nr {env.recipient_serial}, obecny nr {own.serial_number}) – "
+                                                 f"klucz został wymieniony, odczyt niemożliwy."}
         return {"readable": False, "reason": str(exc)}
     return {"readable": True, "text": text.decode("utf-8", errors="replace"),
             **_check_sender(env, text, payload.get("certificate"), payload.get("signature"))}
 
 
 def _entry(env: Envelope, role: str, route: List[str], at: Optional[str]) -> Dict[str, Any]:
-    return {"from": env.sender, "to": env.recipient, "role": role, "route": route, "at": at,
-            "ciphertext": env.ciphertext, **_open(env)}
+    base = {"from": env.sender, "to": env.recipient, "role": role, "route": route, "at": at,
+            "ciphertext": env.ciphertext}
+    if role != "recipient" or env.recipient != config.NODE_ID:
+        # Not for this node: only the recipient's key opens it, so nothing to try (and nothing went wrong).
+        who = "Wysłana" if role == "sender" else "Przenoszona"
+        return {**base, "readable": False,
+                "reason": f"{who} do {env.recipient} – zaszyfrowana jego kluczem."}
+    return {**base, **_open(env)}
 
 
 @router.post("/send", summary="Encrypt for the recipient's certificate and hand to the edge client (radio links)")

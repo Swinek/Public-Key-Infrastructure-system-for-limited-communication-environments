@@ -7,8 +7,8 @@
 # nie podpisuje – certyfikaty wystawia CA (admin/backend) przez API.
 #
 # Przebieg (bez argumentów):
-#   FAZA ONLINE  – wydanie certyfikatu węzła „alfa” i odwołanego „mallory” przez API
-#                  CA, pobranie certyfikatu CA i CRL z portalu klienta (jak węzeł polowy).
+#   FAZA ONLINE  – wnioski CSR węzłów „alfa” i „mallory” (klucz generowany lokalnie) przez
+#                  portal, zatwierdzenie w CA, odwołanie „mallory”, pobranie CA i CRL z portalu.
 #   FAZA OFFLINE – od tej chwili bez sieci: weryfikacja łańcucha i statusu w CRL,
 #                  odrzucenie odwołanego certyfikatu, wyzwanie–podpis–weryfikacja.
 #
@@ -92,26 +92,34 @@ fetch_pem() {
     fi
 }
 
-# issue_node NAZWA – rejestruje węzeł i wystawia mu certyfikat; zapisuje
-# $TEMP_DIR/NAZWA_cert.pem, $TEMP_DIR/NAZWA_private.key, wypisuje id certyfikatu.
-# Klucz prywatny węzła generuje serwer CA – w demo to akceptujemy; docelowo węzeł
-# generuje klucz sam i wysyła CSR (Etap 3 planu wdrożenia).
 # json_get POLE – odczyt pola z JSON na stdin (python3 zamiast jq, bez dodatkowych pakietów).
 json_get() {
     python3 -c 'import json,sys; print(json.load(sys.stdin)[sys.argv[1]])' "$1"
 }
 
+# issue_node NAZWA – jak Edge client: węzeł generuje klucz EC P-256 i wniosek CSR (OpenSSL), portal go
+# przyjmuje, administrator zatwierdza w CA. Klucz prywatny nie opuszcza węzła. Zapisuje
+# $TEMP_DIR/NAZWA_cert.pem, $TEMP_DIR/NAZWA_private.key, wypisuje id certyfikatu.
 issue_node() {
-    local name="$1" ts user_json user_id cert_json
-    ts="$(date +%s)_${RANDOM}"
-    user_json=$(api_post "$ADMIN_URL/api/users" \
-        "{\"username\": \"radio_node_${name}_${ts}\", \"email\": \"${name}_${ts}@radio.local\", \"role\": \"user\"}")
-    user_id=$(json_get id <<<"$user_json")
-    cert_json=$(api_post "$ADMIN_URL/api/certificates" "{\"userId\": ${user_id}}")
+    local name="$1" node_id key csr out code fp request_id cert_json
+    node_id="radio_node_${name}_$(date +%s)_${RANDOM}"
+    key="$TEMP_DIR/${name}_private.key"
+    csr="$TEMP_DIR/${name}.csr.der"
+    openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$key" 2>/dev/null
+    openssl req -new -key "$key" -subj "/CN=${node_id}" -sha256 -outform DER -out "$csr"
+    out="$TEMP_DIR/csr_resp.json"
+    code=$(curl -sS -m 15 -o "$out" -w '%{http_code}' -H 'Content-Type: application/pkcs10' \
+        --data-binary "@$csr" "$PORTAL_URL/pki/csr") || { echo "    [BŁĄD] Brak połączenia z $PORTAL_URL" >&2; exit 1; }
+    if [ "${code:0:1}" != "2" ]; then
+        echo "    [BŁĄD] Portal odrzucił wniosek (HTTP $code): $(cat "$out")" >&2
+        exit 1
+    fi
+    fp=$(json_get key_fingerprint < "$out")
+    request_id=$(curl -sSf -m 15 "$ADMIN_URL/api/csr?status=PENDING" | python3 -c \
+        'import json,sys; print(next(r["id"] for r in json.load(sys.stdin) if r["key_fingerprint"] == sys.argv[1]))' "$fp")
+    cert_json=$(api_post "$ADMIN_URL/api/csr/${request_id}/approve" "{}")
     json_get certificate_pem <<<"$cert_json" > "$TEMP_DIR/${name}_cert.pem"
-    json_get private_key <<<"$cert_json" > "$TEMP_DIR/${name}_private.key"
-    chmod 600 "$TEMP_DIR/${name}_private.key"
-    echo "    Wydano certyfikat węzła CN=radio_node_${name}_${ts} (seryjny: $(json_get serial_number <<<"$cert_json"))" >&2
+    echo "    Wniosek CSR ${node_id} zatwierdzony, certyfikat seryjny $(json_get serial_number <<<"$cert_json")" >&2
     json_get id <<<"$cert_json"
 }
 

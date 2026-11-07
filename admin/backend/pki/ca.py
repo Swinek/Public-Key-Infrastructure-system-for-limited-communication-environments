@@ -32,9 +32,10 @@ CA_KEY_USAGE = x509.KeyUsage(
     data_encipherment=False, key_agreement=False, key_cert_sign=True, crl_sign=True,
     encipher_only=False, decipher_only=False,
 )
+# keyAgreement: the node key is also used for ECDH when a message is encrypted for it (RFC 5280 4.2.1.3).
 LEAF_KEY_USAGE = x509.KeyUsage(
     digital_signature=True, content_commitment=False, key_encipherment=False,
-    data_encipherment=False, key_agreement=False, key_cert_sign=False, crl_sign=False,
+    data_encipherment=False, key_agreement=True, key_cert_sign=False, crl_sign=False,
     encipher_only=False, decipher_only=False,
 )
 
@@ -197,22 +198,6 @@ def describe_certificate(cert: x509.Certificate) -> dict:
         "size_der": len(cert.public_bytes(serialization.Encoding.DER)),
         "size_pem": len(cert.public_bytes(serialization.Encoding.PEM)),
     }
-
-
-def issue_user_certificate(username: str, email: str):
-    """
-    Generates a private key and an X.509 certificate
-    signed by the root CA.
-    """
-
-    user_private_key = ec.generate_private_key(CURVE)
-    result = _sign_leaf(user_private_key.public_key(), username, email)
-    result["private_key_pem"] = user_private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
-    ).decode()
-    return result
 
 
 class CsrError(ValueError):

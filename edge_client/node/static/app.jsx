@@ -120,23 +120,12 @@ function RequestCard({ store, onChanged }) {
       {!store?.ca_pinned && (
         <p className="text-[11px] text-rose-700">Root CA is not pinned (CA_FINGERPRINT) – the node accepts no CA.</p>
       )}
-      {request ? (
+      {request && (
         <div className="space-y-1 text-[11px] text-slate-600">
           <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-semibold border ${
             REQUEST_STYLES[request.status] || REQUEST_STYLES.NEW}`}>{request.status}</span>
-          <div className="font-mono break-all" title="SHA-256 of the public key">{request.key_fingerprint}</div>
           <div>Created {fmtDate(request.created_at)}{request.reason ? ` – ${request.reason}` : ""}</div>
-          {request.status === "RELAYED" && (
-            <div className="text-sky-700">
-              Carried to the CA by the neighbours. The CA panel shows this key fingerprint with the route – compare
-              them out of band before the administrator approves.
-            </div>
-          )}
         </div>
-      ) : (
-        <p className="text-[11px] text-slate-500">
-          No pending request. A request is filed automatically when the node has no valid certificate.
-        </p>
       )}
       <Feedback result={result} />
       <button type="button" onClick={newRequest} disabled={busy} className={`${button} w-full !mt-auto`}>
@@ -166,9 +155,6 @@ function CertificateCard({ store }) {
           {cert && <VerdictBadge status={cert.verdict?.status} />}
         </h3>
         <div className="flex gap-2 text-[11px]">
-          <span className="px-2 py-0.5 rounded-full border border-slate-200 bg-slate-50 text-slate-600" title={store?.ca?.fingerprint}>
-            Root CA: {store?.ca ? cn(store.ca.subject) : "none"}
-          </span>
           <span className={`px-2 py-0.5 rounded-full border ${crlStale
             ? "border-amber-200 bg-amber-50 text-amber-800" : "border-slate-200 bg-slate-50 text-slate-600"}`}
             title={store?.crl ? `next update ${fmtDate(store.crl.next_update)}` : ""}>
@@ -186,8 +172,7 @@ function CertificateCard({ store }) {
             <Field label="Valid">{fmtDay(cert.not_before)} – {fmtDay(cert.not_after)}</Field>
             <Field label="Installed">{fmtDate(cert.installed_at)}</Field>
           </div>
-          <div className="mt-auto flex items-center justify-between gap-4 pt-3 border-t border-slate-100">
-            <span className="text-[11px] text-slate-500">{cert.verdict?.reason}</span>
+          <div className="mt-auto flex items-center justify-end gap-4 pt-3 border-t border-slate-100">
             <a href="/api/certs/certificate"
               className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200">
               <DownloadIcon className="w-3.5 h-3.5" /> Download

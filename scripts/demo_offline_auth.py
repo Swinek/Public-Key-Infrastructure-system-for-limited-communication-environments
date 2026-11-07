@@ -7,7 +7,8 @@ Skrypt wyłącznie WERYFIKUJE. Nie czyta klucza prywatnego Root CA i niczego nim
 podpisuje – certyfikaty wystawia CA (admin/backend) przez API.
 
 Przebieg (bez argumentów):
-  FAZA ONLINE  – wydanie certyfikatu węzła „alfa” oraz odwołanego „mallory” przez API CA,
+  FAZA ONLINE  – wnioski CSR węzłów „alfa” i „mallory” (klucz generowany lokalnie) przez portal,
+                 zatwierdzenie w CA, odwołanie „mallory”,
                  pobranie certyfikatu Root CA i CRL z portalu klienta (jak węzeł polowy).
   FAZA OFFLINE – od tej chwili bez sieci. Węzeł B (Stacja Polowa Bravo):
                  1. weryfikuje podpis CA na CRL i jej świeżość (nextUpdate),
@@ -56,13 +57,14 @@ class DemoError(Exception):
 # HTTP (biblioteka standardowa)
 # ==============================================================================
 
-def http_request(url: str, payload: dict | None = None, timeout: float = 15.0) -> bytes:
-    data = None
-    headers = {}
+def http_request(url: str, payload: dict | None = None, timeout: float = 15.0,
+                 body: bytes | None = None, content_type: str | None = None) -> bytes:
+    data = body
+    headers = {"Content-Type": content_type} if content_type else {}
     if payload is not None:
         data = json.dumps(payload).encode()
         headers["Content-Type"] = "application/json"
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data else "GET")
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data is not None else "GET")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read()
@@ -77,26 +79,31 @@ def api_post(url: str, payload: dict) -> dict:
     return json.loads(http_request(url, payload))
 
 
-def issue_node(admin_url: str, name: str, workdir: Path) -> tuple[dict, Path, Path]:
-    """Rejestruje węzeł w CA i wystawia mu certyfikat.
+def issue_node(admin_url: str, portal_url: str, name: str, workdir: Path) -> tuple[dict, Path, Path]:
+    """Węzeł generuje klucz i wniosek CSR, portal go przyjmuje, administrator zatwierdza w CA.
 
-    Klucz prywatny węzła generuje serwer CA – w demo to akceptujemy; docelowo węzeł
-    generuje klucz sam i wysyła CSR (Etap 3 planu wdrożenia).
+    Ta sama ścieżka co u Edge clienta: klucz prywatny nie opuszcza węzła, CA dostaje tylko CSR.
     """
-    suffix = f"{int(time.time())}_{secrets.randbelow(10000)}"
-    user = api_post(f"{admin_url}/api/users", {
-        "username": f"radio_node_{name}_{suffix}",
-        "email": f"{name}_{suffix}@radio.local",
-        "role": "user",
-    })
-    cert = api_post(f"{admin_url}/api/certificates", {"userId": user["id"]})
+    node_id = f"radio_node_{name}_{int(time.time())}_{secrets.randbelow(10000)}"
+    key = ec.generate_private_key(ec.SECP256R1())
+    csr = (x509.CertificateSigningRequestBuilder()
+           .subject_name(x509.Name([x509.NameAttribute(x509.oid.NameOID.COMMON_NAME, node_id)]))
+           .sign(key, hashes.SHA256()))
+    filed = json.loads(http_request(f"{portal_url}/pki/csr", body=csr.public_bytes(serialization.Encoding.DER),
+                                    content_type="application/pkcs10"))
+    pending = json.loads(http_request(f"{admin_url}/api/csr?status=PENDING"))
+    request = next((r for r in pending if r["key_fingerprint"] == filed["key_fingerprint"]), None)
+    if request is None:
+        raise DemoError(f"Wniosek {node_id} nie czeka w CA na zatwierdzenie.")
+    cert = api_post(f"{admin_url}/api/csr/{request['id']}/approve", {})
 
     cert_path = workdir / f"{name}_cert.pem"
     key_path = workdir / f"{name}_private.key"
     cert_path.write_text(cert["certificate_pem"])
-    key_path.write_text(cert["private_key"])
+    key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                           serialization.NoEncryption()))
     key_path.chmod(0o600)
-    print(f"    Wydano certyfikat węzła CN=radio_node_{name}_{suffix} (seryjny: {cert['serial_number']})")
+    print(f"    Wniosek CSR {node_id} zatwierdzony, certyfikat seryjny {cert['serial_number']}")
     return cert, cert_path, key_path
 
 
@@ -291,12 +298,12 @@ def run_online_phase(admin_url: str, portal_url: str, with_revoked: bool, workdi
     print("    [OK] CA odpowiada.")
 
     print("[*] Wydawanie certyfikatu węzła „alfa”...")
-    _, alfa_cert, alfa_key = issue_node(admin_url, "alfa", workdir)
+    _, alfa_cert, alfa_key = issue_node(admin_url, portal_url, "alfa", workdir)
 
     mallory_cert = None
     if with_revoked:
         print("[*] Wydawanie certyfikatu węzła „mallory” i jego odwołanie (keyCompromise)...")
-        mallory, mallory_cert, _ = issue_node(admin_url, "mallory", workdir)
+        mallory, mallory_cert, _ = issue_node(admin_url, portal_url, "mallory", workdir)
         api_post(f"{admin_url}/api/certificates/revoke", {"certId": mallory["id"], "reason": "keyCompromise"})
         print("    Certyfikat „mallory” odwołany w CA.")
 

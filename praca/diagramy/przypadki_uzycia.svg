@@ -1,0 +1,185 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1740" height="1190" viewBox="0 0 1740 1190" font-family="Helvetica, Arial, sans-serif" fill="#1f2328">
+<title>Diagram przypadków użycia – PKI w warunkach ograniczonej łączności</title>
+<defs>
+<marker id="open" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="12" markerHeight="12" orient="auto" markerUnits="userSpaceOnUse">
+  <path d="M1,1 L11,6 L1,11" fill="none" stroke="#1f2328" stroke-width="1.3"/></marker>
+<marker id="tri" viewBox="0 0 16 16" refX="15" refY="8" markerWidth="16" markerHeight="16" orient="auto" markerUnits="userSpaceOnUse">
+  <path d="M1,1 L15,8 L1,15 Z" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/></marker>
+</defs>
+<rect width="1740" height="1190" fill="#ffffff"/>
+<rect x="12" y="12" width="1716" height="1166" fill="none" stroke="#1f2328" stroke-width="1.4"/>
+<path d="M12,12 H643 V30 L629,42 H12 Z" fill="#ffffff" stroke="#1f2328" stroke-width="1.4"/>
+<text font-size="14" text-anchor="start" font-weight="bold" font-style="normal"><tspan x="22.0" y="31.9">uc  System generowania i dystrybucji certyfikatów w sieci o ograniczonej łączności</tspan></text>
+<rect x="170" y="58" width="1390" height="448" fill="#f3f6fb" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic"><tspan x="865.0" y="74.8">«subsystem»</tspan></text>
+<text font-size="14" text-anchor="middle" font-weight="bold" font-style="normal"><tspan x="865.0" y="91.9">Centrum PKI – urząd certyfikacji, panel administratora, portal WAN</tspan></text>
+<rect x="170" y="532" width="735" height="534" fill="#f3f8f2" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic"><tspan x="537.5" y="548.9">«subsystem»</tspan></text>
+<text font-size="14" text-anchor="middle" font-weight="bold" font-style="normal"><tspan x="537.5" y="565.9">Edge client – węzeł brzegowy (dystrybucja PKI)</tspan></text>
+<rect x="1060" y="532" width="500" height="534" fill="#fbf6ef" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic"><tspan x="1310.0" y="548.9">«subsystem»</tspan></text>
+<text font-size="14" text-anchor="middle" font-weight="bold" font-style="normal"><tspan x="1310.0" y="565.9">Edge app – użytkownik certyfikatu</tspan></text>
+<path d="M1095,118 H1525 L1535,128 V175 H1095 Z" fill="#fffef6" stroke="#1f2328" stroke-width="1"/>
+<path d="M1525,118 V128 H1535" fill="none" stroke="#1f2328" stroke-width="1"/>
+<text font-size="11.5" text-anchor="start" font-weight="normal" font-style="normal"><tspan x="1104.0" y="135.5">Klucz prywatny Root CA istnieje wyłącznie w Centrum.</tspan><tspan x="1104.0" y="150.5">Edge client i Edge app niczego nie podpisują kluczem CA –</tspan><tspan x="1104.0" y="165.5">tylko weryfikują podpisy.</tspan></text>
+<path d="M1095,196 H1525 L1535,206 V253 H1095 Z" fill="#fffef6" stroke="#1f2328" stroke-width="1"/>
+<path d="M1525,196 V206 H1535" fill="none" stroke="#1f2328" stroke-width="1"/>
+<text font-size="11.5" text-anchor="start" font-weight="normal" font-style="normal"><tspan x="1104.0" y="213.5">Portal (:5001, konto bazy tylko do odczytu) publikuje CA,</tspan><tspan x="1104.0" y="228.5">CRL i certyfikaty oraz przyjmuje CSR – jedyny styk</tspan><tspan x="1104.0" y="243.5">z węzłami przez łącze WAN.</tspan></text>
+<line x1="1350.0" y1="438.5" x2="1320" y2="440" stroke="#1f2328" stroke-width="1" stroke-dasharray="3 3"/>
+<path d="M1350,410 H1525 L1535,420 V467 H1350 Z" fill="#fffef6" stroke="#1f2328" stroke-width="1"/>
+<path d="M1525,410 V420 H1535" fill="none" stroke="#1f2328" stroke-width="1"/>
+<text font-size="11.5" text-anchor="start" font-weight="normal" font-style="normal"><tspan x="1359.0" y="427.5">Wyzwalane też decyzją</tspan><tspan x="1359.0" y="442.5">w sprawie CSR (NOTIFY</tspan><tspan x="1359.0" y="457.5">crl_issued / cert_issued).</tspan></text>
+<line x1="460.0" y1="1004.0" x2="711" y2="1006" stroke="#1f2328" stroke-width="1" stroke-dasharray="3 3"/>
+<path d="M205,968 H450 L460,978 V1040 H205 Z" fill="#fffef6" stroke="#1f2328" stroke-width="1"/>
+<path d="M450,968 V978 H460" fill="none" stroke="#1f2328" stroke-width="1"/>
+<text font-size="11.5" text-anchor="start" font-weight="normal" font-style="normal"><tspan x="214.0" y="985.5">Kontakt = internet on, hello / hello-ack</tspan><tspan x="214.0" y="1000.5">lub announce. Brak timerów: najpierw</tspan><tspan x="214.0" y="1015.5">/pki/summary, potem pull tylko</tspan><tspan x="214.0" y="1030.5">brakujących obiektów.</tspan></text>
+<line x1="1186.0" y1="925.0" x2="1182" y2="813" stroke="#1f2328" stroke-width="1" stroke-dasharray="3 3"/>
+<path d="M1072,925 H1290 L1300,935 V997 H1072 Z" fill="#fffef6" stroke="#1f2328" stroke-width="1"/>
+<path d="M1290,925 V935 H1300" fill="none" stroke="#1f2328" stroke-width="1"/>
+<text font-size="11.5" text-anchor="start" font-weight="normal" font-style="normal"><tspan x="1081.0" y="942.5">verify(cert, CA, CRL, now) →</tspan><tspan x="1081.0" y="957.5">valid | revoked | invalid | unknown</tspan><tspan x="1081.0" y="972.5">(wspólny weryfikator</tspan><tspan x="1081.0" y="987.5">edge_app/pki)</tspan></text>
+<line x1="101.0" y1="278.9" x2="265.3" y2="164.2" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="101.0" y1="288.8" x2="301.2" y2="226.0" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="101.0" y1="295.0" x2="309.0" y2="279.3" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="101.0" y1="300.2" x2="314.8" y2="326.8" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="101.0" y1="306.6" x2="307.4" y2="382.7" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="101.0" y1="317.0" x2="268.1" y2="445.5" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="615.6" y1="147.4" x2="439.4" y2="188.6" stroke="#1f2328" stroke-width="1.2" marker-end="url(#tri)"/>
+<line x1="591.0" y1="214.3" x2="464.0" y2="209.7" stroke="#1f2328" stroke-width="1.2" marker-end="url(#tri)"/>
+<line x1="756.9" y1="198.7" x2="889.8" y2="160.3" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="785.4" y1="225.8" x2="854.3" y2="231.4" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="485.8" y1="256.7" x2="609.2" y2="233.3" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="494.2" y1="283.7" x2="862.6" y2="332.2" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="504.9" y1="339.3" x2="848.2" y2="343.6" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="1305.0" y1="345.0" x2="1072.0" y2="345.0" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="1017.5" y1="367.3" x2="1147.1" y2="417.5" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="1570.0" y1="345.0" x2="1515.0" y2="345.0" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="101.0" y1="712.8" x2="257.0" y2="627.5" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="101.0" y1="721.8" x2="280.7" y2="685.9" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="101.0" y1="727.7" x2="295.6" y2="733.2" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="101.0" y1="733.8" x2="289.7" y2="783.5" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="101.0" y1="743.3" x2="261.7" y2="844.0" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="448.9" y1="681.9" x2="1085.4" y2="767.1" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="588.2" y1="757.7" x2="486.8" y2="746.3" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="587.4" y1="777.8" x2="452.6" y2="792.2" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="666.5" y1="793.8" x2="603.5" y2="914.2" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="372.3" y1="886.0" x2="513.5" y2="921.0" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="743.9" y1="990.1" x2="655.0" y2="961.2" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="805.0" y1="911.0" x2="805.0" y2="984.0" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="915.0" y1="854.3" x2="737.8" y2="789.2" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="944.8" y1="909.0" x2="838.7" y2="985.7" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="915.0" y1="1023.4" x2="891.7" y2="1020.6" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="1629.0" y1="719.3" x2="1472.6" y2="643.2" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="1629.0" y1="730.6" x2="1527.7" y2="725.4" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="1629.0" y1="741.9" x2="1482.0" y2="798.2" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="1629.0" y1="755.5" x2="1452.7" y2="914.9" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="1585.0" y1="981.7" x2="1497.3" y2="958.9" stroke="#1f2328" stroke-width="1.2"/>
+<line x1="1350.6" y1="738.4" x2="1264.6" y2="759.6" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="1337.6" y1="805.6" x2="1275.0" y2="795.3" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<line x1="1388.0" y1="915.7" x2="1227.2" y2="809.8" stroke="#1f2328" stroke-width="1.1" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<ellipse cx="300" cy="140" rx="95" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="300.0" y="137.1">Zainicjuj Root CA</tspan><tspan x="300.0" y="151.6">(ECDSA P-256)</tspan></text>
+<ellipse cx="365" cy="206" rx="100" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="365.0" y="203.1">Rozpatrz</tspan><tspan x="365.0" y="217.6">wniosek CSR</tspan></text>
+<ellipse cx="405" cy="272" rx="100" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="405.0" y="276.4">Odwołaj certyfikat</tspan></text>
+<ellipse cx="405" cy="338" rx="100" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="405.0" y="335.1">Wystaw CRL</tspan><tspan x="405.0" y="349.6">na żądanie</tspan></text>
+<ellipse cx="365" cy="404" rx="100" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="365.0" y="401.1">Przeglądaj stan PKI</tspan><tspan x="365.0" y="415.6">(CA, CRL, rejestr)</tspan></text>
+<ellipse cx="300" cy="470" rx="95" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="300.0" y="467.1">Eksportuj CRL</tspan><tspan x="300.0" y="481.6">na nośnik (DER)</tspan></text>
+<ellipse cx="690" cy="130" rx="100" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="690.0" y="127.1">Odrzuć</tspan><tspan x="690.0" y="141.6">wniosek CSR</tspan></text>
+<ellipse cx="690" cy="218" rx="100" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="690.0" y="215.1">Zatwierdź</tspan><tspan x="690.0" y="229.6">wniosek CSR</tspan></text>
+<ellipse cx="960" cy="140" rx="112" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="960.0" y="137.1">Potwierdź odcisk klucza</tspan><tspan x="960.0" y="151.6">(kanał pozasystemowy)</tspan></text>
+<ellipse cx="960" cy="240" rx="112" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="960.0" y="237.1">Wydaj certyfikat X.509</tspan><tspan x="960.0" y="251.6">(podpis kluczem CA)</tspan></text>
+<ellipse cx="960" cy="345" rx="112" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="960.0" y="342.1">Wystaw i podpisz CRL</tspan><tspan x="960.0" y="356.6">(CRLNumber + 1)</tspan></text>
+<ellipse cx="1205" cy="440" rx="115" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="1205.0" y="437.1">Powiadom węzły online</tspan><tspan x="1205.0" y="451.6">(impuls przez WAN)</tspan></text>
+<ellipse cx="1410" cy="345" rx="105" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="1410.0" y="342.1">Odśwież CRL</tspan><tspan x="1410.0" y="356.6">okresowo (co 24 h)</tspan></text>
+<ellipse cx="300" cy="604" rx="100" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="300.0" y="601.1">Przeglądaj pomiary</tspan><tspan x="300.0" y="615.6">transferu (WAN / P2P)</tspan></text>
+<ellipse cx="360" cy="670" rx="100" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="360.0" y="667.1">Sprawdź certyfikat</tspan><tspan x="360.0" y="681.6">offline</tspan></text>
+<ellipse cx="395" cy="736" rx="100" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="395.0" y="733.1">Uzyskaj certyfikat węzła</tspan><tspan x="395.0" y="747.6">(klucz w węźle + CSR)</tspan></text>
+<ellipse cx="360" cy="802" rx="100" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="360.0" y="799.1">Wyślij wiadomość</tspan><tspan x="360.0" y="813.6">lub plik</tspan></text>
+<ellipse cx="300" cy="868" rx="100" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="300.0" y="865.1">Wczytaj CRL</tspan><tspan x="300.0" y="879.6">z nośnika</tspan></text>
+<ellipse cx="680" cy="768" rx="100" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="680.0" y="765.1">Przenieś dane metodą</tspan><tspan x="680.0" y="779.6">store-and-forward</tspan></text>
+<ellipse cx="590" cy="940" rx="112" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="590.0" y="937.1">Zweryfikuj obiekt PKI</tspan><tspan x="590.0" y="951.6">(podpis CA, pin, CRLNumber)</tspan></text>
+<ellipse cx="805" cy="885" rx="95" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="805.0" y="882.1">Rozgłoś nowe dane</tspan><tspan x="805.0" y="896.6">sąsiadom (announce)</tspan></text>
+<ellipse cx="805" cy="1010" rx="95" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="805.0" y="1007.1">Synchronizuj dane PKI</tspan><tspan x="805.0" y="1021.6">przy kontakcie</tspan></text>
+<ellipse cx="1182" cy="780" rx="105" ry="33" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="1182.0" y="769.9">Zweryfikuj certyfikat</tspan><tspan x="1182.0" y="784.4">offline (łańcuch,</tspan><tspan x="1182.0" y="798.9">ważność, CRL)</tspan></text>
+<ellipse cx="1425" cy="620" rx="105" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="1425.0" y="617.1">Pobierz certyfikat</tspan><tspan x="1425.0" y="631.6">i dane PKI</tspan></text>
+<ellipse cx="1425" cy="720" rx="105" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="1425.0" y="717.1">Wyślij wiadomość</tspan><tspan x="1425.0" y="731.6">szyfrowaną (ECIES)</tspan></text>
+<ellipse cx="1425" cy="820" rx="105" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="1425.0" y="817.1">Odczytaj wiadomość</tspan><tspan x="1425.0" y="831.6">szyfrowaną</tspan></text>
+<ellipse cx="1425" cy="940" rx="105" ry="26" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="12.5" text-anchor="middle" font-weight="normal" font-style="normal"><tspan x="1425.0" y="937.1">Uwierzytelnij węzły</tspan><tspan x="1425.0" y="951.6">(challenge–response)</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="820.6" y="173.7">«include»</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="820.7" y="222.5">«include»</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="550.1" y="256.1">«extend»</tspan><tspan x="550.1" y="269.1">{węzeł ma już certyfikat}</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="650.1" y="299.0">«include»</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="648.9" y="355.9">«include»</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="1188.5" y="338.9">«include»</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="1085.9" y="386.9">«include»</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="972.2" y="745.7">«include»</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="539.3" y="733.4">«extend»</tspan><tspan x="539.3" y="746.4">{brak łącza WAN}</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="521.9" y="800.2">«extend»</tspan><tspan x="521.9" y="813.2">{adresat poza zasięgiem}</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="665.1" y="873.6">«include»</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="440.0" y="919.0">«include»</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="695.7" y="990.9">«include»</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="857.0" y="944.9">«extend»</tspan><tspan x="857.0" y="957.9">{nowsza wersja}</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="1305.2" y="743.1">«include»</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="1304.8" y="793.9">«include»</tspan></text>
+<text font-size="11" text-anchor="middle" font-weight="normal" font-style="italic" paint-order="stroke" stroke="#ffffff" stroke-width="5" stroke-linejoin="round"><tspan x="1301.0" y="876.6">«include»</tspan></text>
+<circle cx="75" cy="267" r="10" fill="#ffffff" stroke="#1f2328" stroke-width="1.5"/>
+<path d="M75,277 V309 M57,289 H93 M75,309 L61,333 M75,309 L89,333" stroke="#1f2328" stroke-width="1.5" fill="none"/>
+<text font-size="13" text-anchor="middle" font-weight="bold" font-style="normal"><tspan x="75.0" y="357.6">Administrator CA</tspan></text>
+<rect x="1570" y="316" width="140" height="58" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="10.5" text-anchor="middle" font-weight="normal" font-style="italic"><tspan x="1640.0" y="334.7">«system»</tspan></text>
+<text font-size="12.5" text-anchor="middle" font-weight="bold" font-style="normal"><tspan x="1640.0" y="349.4">Harmonogram</tspan><tspan x="1640.0" y="363.4">CRL</tspan></text>
+<g stroke="#1f2328" stroke-width="1" fill="none"><circle cx="1696" cy="325" r="3"/><path d="M1696,328 V336 M1691,331 H1701 M1696,336 L1692,341 M1696,336 L1700,341"/></g>
+<circle cx="75" cy="697" r="10" fill="#ffffff" stroke="#1f2328" stroke-width="1.5"/>
+<path d="M75,707 V739 M57,719 H93 M75,739 L61,763 M75,739 L89,763" stroke="#1f2328" stroke-width="1.5" fill="none"/>
+<text font-size="13" text-anchor="middle" font-weight="bold" font-style="normal"><tspan x="75.0" y="787.5">Operator węzła</tspan></text>
+<rect x="915" y="851" width="140" height="58" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="10.5" text-anchor="middle" font-weight="normal" font-style="italic"><tspan x="985.0" y="869.7">«system»</tspan></text>
+<text font-size="12.5" text-anchor="middle" font-weight="bold" font-style="normal"><tspan x="985.0" y="884.4">Sąsiedni</tspan><tspan x="985.0" y="898.4">Edge client</tspan></text>
+<g stroke="#1f2328" stroke-width="1" fill="none"><circle cx="1041" cy="860" r="3"/><path d="M1041,863 V871 M1036,866 H1046 M1041,871 L1037,876 M1041,871 L1045,876"/></g>
+<rect x="915" y="1003" width="140" height="58" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="10.5" text-anchor="middle" font-weight="normal" font-style="italic"><tspan x="985.0" y="1021.7">«system»</tspan></text>
+<text font-size="12.5" text-anchor="middle" font-weight="bold" font-style="normal"><tspan x="985.0" y="1036.4">Łączność</tspan><tspan x="985.0" y="1050.4">(client.sh)</tspan></text>
+<g stroke="#1f2328" stroke-width="1" fill="none"><circle cx="1041" cy="1012" r="3"/><path d="M1041,1015 V1023 M1036,1018 H1046 M1041,1023 L1037,1028 M1041,1023 L1045,1028"/></g>
+<circle cx="1655" cy="702" r="10" fill="#ffffff" stroke="#1f2328" stroke-width="1.5"/>
+<path d="M1655,712 V744 M1637,724 H1673 M1655,744 L1641,768 M1655,744 L1669,768" stroke="#1f2328" stroke-width="1.5" fill="none"/>
+<text font-size="13" text-anchor="middle" font-weight="bold" font-style="normal"><tspan x="1655.0" y="785.0">Użytkownik</tspan><tspan x="1655.0" y="800.0">Edge app</tspan></text>
+<rect x="1585" y="971" width="140" height="58" fill="#ffffff" stroke="#1f2328" stroke-width="1.3"/>
+<text font-size="10.5" text-anchor="middle" font-weight="normal" font-style="italic"><tspan x="1655.0" y="989.7">«system»</tspan></text>
+<text font-size="12.5" text-anchor="middle" font-weight="bold" font-style="normal"><tspan x="1655.0" y="1004.4">Zdalna</tspan><tspan x="1655.0" y="1018.4">Edge app</tspan></text>
+<g stroke="#1f2328" stroke-width="1" fill="none"><circle cx="1711" cy="980" r="3"/><path d="M1711,983 V991 M1706,986 H1716 M1711,991 L1707,996 M1711,991 L1715,996"/></g>
+<rect x="1060" y="1084" width="520" height="88" fill="#ffffff" stroke="#1f2328" stroke-width="1"/>
+<text font-size="12" text-anchor="start" font-weight="bold" font-style="normal"><tspan x="1072.0" y="1103.2">Legenda</tspan></text>
+<line x1="1074" y1="1124" x2="1122" y2="1124" stroke="#1f2328" stroke-width="1.2"/>
+<text font-size="11.5" text-anchor="start" font-weight="normal" font-style="normal"><tspan x="1132.0" y="1128.0">asocjacja aktor – przypadek użycia</tspan></text>
+<line x1="1319" y1="1124" x2="1367" y2="1124" stroke="#1f2328" stroke-width="1.2" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<text font-size="11.5" text-anchor="start" font-weight="normal" font-style="normal"><tspan x="1377.0" y="1128.0">«include» – zawsze wykonywany</tspan></text>
+<line x1="1074" y1="1152" x2="1122" y2="1152" stroke="#1f2328" stroke-width="1.2" stroke-dasharray="6 4" marker-end="url(#open)"/>
+<text font-size="11.5" text-anchor="start" font-weight="normal" font-style="normal"><tspan x="1132.0" y="1156.0">«extend» {warunek} – opcjonalny</tspan></text>
+<line x1="1319" y1="1152" x2="1367" y2="1152" stroke="#1f2328" stroke-width="1.2" marker-end="url(#tri)"/>
+<text font-size="11.5" text-anchor="start" font-weight="normal" font-style="normal"><tspan x="1377.0" y="1156.0">generalizacja (specjalizacja przypadku)</tspan></text>
+</svg>

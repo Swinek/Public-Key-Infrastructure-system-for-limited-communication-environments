@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+from cryptography.hazmat.primitives import serialization
 from cryptography.x509.oid import NameOID
 from fastapi import APIRouter, HTTPException
 
@@ -50,6 +51,28 @@ def _status(now: datetime) -> Dict[str, Any]:
     }
 
 
+def _same_ca(store, data: bytes) -> bool:
+    current = store.ca()
+    try:
+        return current is not None and pki.store.fingerprint(pki.store.load_certificate(data)) == \
+            pki.store.fingerprint(current)
+    except pki.PkiError:
+        return False  # garbage: install_ca reports it
+
+
+def _same_node(store, cert_data: bytes, key_data: Optional[bytes]) -> bool:
+    """The same certificate with the same key is already stored (a key alone never changes without the cert)."""
+    current, key = store.node_certificate(), store.private_key()
+    if current is None or key is None or key_data is None:
+        return False
+    try:
+        incoming = pki.store.load_certificate(cert_data)
+        incoming_key = serialization.load_pem_private_key(key_data, password=None)
+    except (pki.PkiError, ValueError, TypeError):
+        return False  # install_node reports it
+    return incoming == current and incoming_key.public_key() == key.public_key()
+
+
 def install_objects(ca: Optional[bytes], cert: Optional[bytes], key: Optional[bytes],
                     crl: Optional[bytes]) -> Tuple[List[str], List[str]]:
     """Verifies and stores what came from the edge client. Returns (installed, warnings)."""
@@ -63,10 +86,11 @@ def install_objects(ca: Optional[bytes], cert: Optional[bytes], key: Optional[by
     installed, warnings = [], []
     try:
         # Order matters: the certificate and the CRL are checked against the (newly) installed CA.
-        if ca is not None:
+        # Objects identical to the stored ones are not reinstalled, so `installed` lists only real changes.
+        if ca is not None and not _same_ca(store, ca):
             store.install_ca(ca)
             installed.append("ca")
-        if cert is not None:
+        if cert is not None and not _same_node(store, cert, key):
             node_cert = store.install_node(cert, key)
             installed.append("cert")
             if _common_name(node_cert) != config.NODE_ID:
@@ -86,19 +110,28 @@ def _edge_client_unreachable(exc: Exception) -> HTTPException:
     return HTTPException(status_code=502, detail=f"Edge client ({config.EDGE_CLIENT_URL}) jest nieosiągalny: {exc}")
 
 
-@router.get("/status", summary="Local PKI store: CA, own certificate, CRL and the verdict for the own certificate")
+@router.get("/status", summary="Local PKI store after a refresh from the edge client (offline: the last copy)")
 def get_pki_status():
-    return _status(datetime.now(timezone.utc))
+    # Without the refresh the panel showed the copy from the last use (e.g. an old certificate and a stale CRL
+    # long after the edge client had new ones). The refresh is a local mgmt_N request, not a radio transfer.
+    try:
+        warning = ensure_certificate()
+    except HTTPException as exc:
+        warning = f"Brak danych od Edge clienta: {exc.detail}"
+    return {**_status(datetime.now(timezone.utc)), "warning": warning}
 
 
 def take_certificate() -> Dict[str, Any]:
-    """Takes the certificate + key, Root CA and CRL from the edge client and installs them."""
+    """Takes the certificate + key, Root CA and CRL from the edge client and installs what changed."""
     try:
         resp = requests.get(f"{config.EDGE_CLIENT_URL}/api/certs/bundle", timeout=config.EDGE_CLIENT_TIMEOUT)
     except requests.RequestException as exc:
         raise _edge_client_unreachable(exc)
     if resp.status_code != 200:
-        detail = resp.json().get("detail", resp.text)
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except (ValueError, AttributeError):
+            detail = resp.text
         raise HTTPException(status_code=resp.status_code, detail=f"Edge client odmówił: {detail}")
 
     bundle = resp.json()
@@ -111,7 +144,8 @@ def take_certificate() -> Dict[str, Any]:
     serial = str(pki.get_store().node_certificate().serial_number)
     source = {"serial_number": serial, "fetched_at": datetime.now(timezone.utc).isoformat()}
     atomic_write_bytes(config.PKI_DIR / SOURCE_FILE, json.dumps(source).encode())
-    print(f"[PKI] Took certificate {serial} from the edge client: {', '.join(installed)}")
+    if installed:
+        print(f"[PKI] Took from the edge client (certificate {serial}): {', '.join(installed)}")
     return {"installed": installed, "warnings": warnings, "status": _status(datetime.now(timezone.utc))}
 
 

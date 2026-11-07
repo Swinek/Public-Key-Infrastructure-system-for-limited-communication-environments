@@ -86,7 +86,7 @@ def test_newer_crl_from_neighbour_is_stored_and_announced(node, monkeypatch, ca)
     _store(node).update_crl(der(ca.crl(number=3)))
     peer = _peer(node, monkeypatch, ca, ca.crl(number=5))
 
-    assert node.exchange(NEIGHBOUR) == {"ca": "same", "crl": "stored"}
+    assert node.exchange(NEIGHBOUR) == {"ca": "same", "crl": "stored", "node_certs": None}
     assert importlib.import_module("certs").crl_number(_store(node).crl()) == 5
     assert peer.requests == ["/pki/summary", "/pki/crl"]  # CA ten sam – nie pobrany
     assert node.announced == [("crl-5", "client_2")]  # dalej, ale nie do źródła
@@ -151,13 +151,13 @@ def test_declared_size_above_hard_limit_is_not_downloaded(node, monkeypatch, ca)
 def test_no_ca_without_pin_even_from_portal(node, monkeypatch, ca):
     """Bez CA_FINGERPRINT żadne CA nie jest przyjmowane (koniec zaufania przy pierwszym użyciu)."""
     peer = _peer(node, monkeypatch, ca, ca.crl(number=1))
-    assert node.exchange(PORTAL) == {"ca": None, "crl": None}
+    assert node.exchange(PORTAL) == {"ca": None, "crl": None, "node_certs": None}
     assert _store(node).ca() is None and "/pki/ca" not in peer.requests
 
 
 def test_ca_from_neighbour_without_pin_is_not_taken(node, monkeypatch, ca):
     peer = _peer(node, monkeypatch, ca, ca.crl(number=1))
-    assert node.exchange(NEIGHBOUR) == {"ca": None, "crl": None}  # bez CA nie da się sprawdzić CRL
+    assert node.exchange(NEIGHBOUR) == {"ca": None, "crl": None, "node_certs": None}  # bez CA nie da się sprawdzić CRL
     assert _store(node).ca() is None and peer.requests == ["/pki/summary"]
 
 
@@ -165,7 +165,7 @@ def test_ca_from_neighbour_with_matching_pin(edge_client_node_env, monkeypatch, 
     monkeypatch.setenv("CA_FINGERPRINT", ca.cert.fingerprint(hashes.SHA256()).hex().upper())
     node = _load(monkeypatch)
     _peer(node, monkeypatch, ca, ca.crl(number=1))
-    assert node.exchange(NEIGHBOUR) == {"ca": "stored", "crl": "stored"}
+    assert node.exchange(NEIGHBOUR) == {"ca": "stored", "crl": "stored", "node_certs": None}
 
 
 def test_pinned_ca_rejects_other_ca(edge_client_node_env, monkeypatch, ca):
@@ -191,7 +191,7 @@ def pki_client(node, monkeypatch):
 
 
 def test_pki_endpoints_serve_the_stored_originals(pki_client, node, ca):
-    assert pki_client.get("/pki/summary").json() == {"ca": None, "crl": None, "certs": None}
+    assert pki_client.get("/pki/summary").json() == {"ca": None, "crl": None, "certs": None, "node_certs": {}}
     assert pki_client.get("/pki/crl").status_code == 404
     crl = ca.crl(number=6)
     _store(node).set_ca(pem(ca.cert))

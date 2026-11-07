@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from tests.pki_factory import TestCA, der, key_pem, pem
+from tests.pki_factory import TestCA, der, pem
 
 PORTAL_URL = "http://portal:5001"
 
@@ -87,10 +87,14 @@ class Net:
         monkeypatch.setattr(self.wire, "post_bytes", self._post_bytes)
         for node in ("client_1", "client_2", "client_3"):
             with self.at(node):
+                # Żaden węzeł nie ma certyfikatu: przewoźnik go nie potrzebuje (dane sprawdza podpisem),
+                # a wniosek składa wyłącznie operator (file).
                 self.store().set_ca(pem(ca.cert))
-                if node != "client_3":  # przewoźnicy mają już certyfikaty; client_3 jest nowy
-                    cert, key = ca.issue(node)
-                    self.store().set_certificate(pem(cert), key_pem(key))
+
+    def file(self, node):
+        """`client.sh csr N` bez kontaktu: nowy klucz + wniosek w stanie NEW."""
+        with self.at(node):
+            return self.store().new_request(node)
 
     @contextmanager
     def at(self, node):
@@ -168,6 +172,7 @@ def net(edge_client_node_env, monkeypatch, ca):
 def _chain_request(net):
     """client_3 (bez internetu) -> client_2 -> client_1 (internet): wniosek trafia do portalu."""
     net.online.add("client_1")
+    net.file("client_3")
     net.radio("client_3", "client_2")
     net.radio("client_2", "client_1")
     with net.at("client_3"):
@@ -182,8 +187,11 @@ def _queue_at(net, node, item, content=None):
 def test_csr_travels_3_2_1_to_portal_and_certificate_comes_back(net):
     pending = _chain_request(net)
     assert pending["status"] == "RELAYED"
-    [request] = net.portal.requests.values()
+    [request] = net.portal.requests.values()  # tylko wniosek client_3 - przewoźnicy bez certyfikatu nic nie składają
     assert request["node"] == "client_3" and request["relayed_via"] == "client_3,client_2,client_1"
+    for carrier in ("client_1", "client_2"):
+        with net.at(carrier):
+            assert net.store().pending() is None and net.store().certificate() is None
     with net.at("client_1"):
         assert net.saf.queue() == [] and [e["node_id"] for e in net.relay.relayed()] == ["client_3"]
 
@@ -245,6 +253,7 @@ def test_certificate_for_another_key_is_not_installed(net, ca):
 
 def test_two_carriers_make_one_request_and_one_certificate(net):
     net.online.update({"client_1", "client_2"})
+    net.file("client_3")
     net.radio("client_3", "client_2")
     net.radio("client_3", "client_1")
     assert len(net.portal.requests) == 1
@@ -290,7 +299,17 @@ def test_rejection_by_the_ca_comes_back_as_hint(net):
     assert net.wan("client_3")[0] == "rejected"
 
 
+def test_no_request_without_the_operator(net):
+    net.online.update({"client_1", "client_2", "client_3"})
+    net.radio("client_3", "client_2")
+    net.radio("client_2", "client_1")
+    for node in ("client_1", "client_2", "client_3"):
+        net.wan(node)
+    assert net.portal.requests == {}  # brak certyfikatu nie wystarcza: wniosek składa tylko operator
+
+
 def test_node_with_internet_does_not_relay(net):
+    net.file("client_3")
     assert net.wan("client_3")[0] == "submitted"
     net.radio("client_3", "client_2")
     with net.at("client_2"):

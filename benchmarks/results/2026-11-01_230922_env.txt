@@ -1,0 +1,7 @@
+data: 2026-11-01T23:09:22
+procesor: AMD Ryzen 7 7730U with Radeon Graphics (logicznych rdzeni: 16, pomiar na jednym wątku)
+openssl: OpenSSL 3.5.7 9 Jun 2026 (Library: OpenSSL 3.5.7 9 Jun 2026)
+cryptography: 50.0.2 (OpenSSL 4.0.3 29 Sep 2026)
+python: 3.11.17
+przebiegi: 5 x 2 s na operację
+próbki podpisów ECDSA: 2000

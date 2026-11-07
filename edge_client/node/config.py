@@ -27,9 +27,6 @@ PORTAL_URL = os.getenv("PORTAL_URL", "http://pki-edge-client-backend:5001")
 # (no trust on first use) and the node cannot verify anything.
 CA_FINGERPRINT = os.getenv("CA_FINGERPRINT", "").replace(":", "").strip().lower()
 
-# Own certificate (enroll.py): a new key + CSR this many days before the certificate expires.
-RENEW_BEFORE_DAYS = int(os.getenv("RENEW_BEFORE_DAYS", "30"))
-
 # Hard limits for objects downloaded from a peer (the size declared in /pki/summary is untrusted).
 MAX_PKI_OBJECT_BYTES = int(os.getenv("MAX_PKI_OBJECT_BYTES", str(256 * 1024)))
 MAX_SUMMARY_BYTES = int(os.getenv("MAX_SUMMARY_BYTES", str(16 * 1024)))

@@ -51,7 +51,7 @@ function SecretMessages({ appId }) {
         body: JSON.stringify({ to, text }),
       });
       const data = await res.json();
-      setSendResult(res.ok ? { ok: `Encrypted for ${data.to} (certificate ${data.envelope.recipient_serial}): ${data.status}, ${data.plaintext_bytes} B text → ${data.radio_bytes} B on the radio link.` } : { error: errorText(data) });
+      setSendResult(res.ok ? null : { error: errorText(data) });
       if (res.ok) { setText(""); loadInbox(); }
     } catch (err) {
       setSendResult({ error: `Connection error: ${err.message}` });
@@ -74,7 +74,6 @@ function SecretMessages({ appId }) {
         </button>
       </form>
       {sendResult?.error && <div className="mt-3 p-3 rounded-lg text-xs bg-rose-50 border border-rose-200 text-rose-800">{sendResult.error}</div>}
-      {sendResult?.ok && <div className="mt-3 p-3 rounded-lg text-xs bg-emerald-50 border border-emerald-200 text-emerald-800">{sendResult.ok}</div>}
 
       <div className="flex items-center justify-between mt-5 mb-2">
         <h3 className="text-xs font-semibold text-slate-700">Held by this node</h3>
@@ -92,10 +91,7 @@ function SecretMessages({ appId }) {
                     {m.sender_verified ? "✓ " : "✗ Sender not verified: "}{m.sender_reason}
                   </div>
                 </>
-              : <>
-                  <div className="font-mono text-[11px] text-slate-600 break-all">{m.ciphertext}</div>
-                  <div className="text-rose-700 mt-1">{m.reason}</div>
-                </>}
+              : <div className={m.role === "recipient" ? "text-rose-700" : "text-slate-500"}>{m.reason}</div>}
           </div>
         ))}
       </div>
@@ -120,9 +116,7 @@ function App() {
           <ShieldCheckIcon className="w-5 h-5 text-indigo-600" />
           Edge App {appId && <span className="text-slate-400 font-medium">{appId}</span>}
         </h1>
-        <p className="text-xs text-slate-500 mt-1 mb-5">
-          Signed with the own certificate, encrypted with the recipient's, sent over the radio links. Carriers only see ciphertext.
-        </p>
+        <div className="mb-5" />
         {appId && <SecretMessages appId={appId} />}
       </div>
     </div>
