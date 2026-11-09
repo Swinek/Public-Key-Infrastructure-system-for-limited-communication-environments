@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from database import close_db, get_pool, init_db
 from pki.ca import initialize_ca
 from pki.store import crl_scheduler, ensure_csr_schema
-from routers import certificates, csr, health, pki_admin, users
+from routers import certificates, csr, health, ocsp, pki_admin, users
 
 logging.basicConfig(
     level=logging.INFO,
@@ -55,6 +55,7 @@ app.include_router(certificates.router, prefix="/api")
 app.include_router(pki_admin.router, prefix="/api")
 app.include_router(csr.router, prefix="/api")
 app.include_router(health.router, prefix="/api")
+app.include_router(ocsp.router, prefix="/api")
 
 
 @app.get("/", tags=["System"])
