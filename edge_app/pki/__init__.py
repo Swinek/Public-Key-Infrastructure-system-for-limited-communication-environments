@@ -30,7 +30,7 @@ def check_certificate(data: bytes, now: Optional[datetime] = None) -> Verdict:
     except PkiError as exc:
         return Verdict(Status.INVALID, str(exc))
     store = get_store()
-    return verify(cert, store.ca(), store.crl(), now or datetime.now(timezone.utc))
+    return verify(cert, store.ca(), store.crl(), now or datetime.now(timezone.utc), store.delta())
 
 
 __all__ = ["PkiError", "PkiStore", "Status", "Verdict", "check_certificate", "get_store", "verify"]

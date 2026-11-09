@@ -5,7 +5,8 @@ Files in the store directory (DER - fewer bytes, same format as the portal sends
     ca.pin        SHA-256 fingerprint of the CA pinned at the first install (when CA_FINGERPRINT is not set)
     node.der      certificate of this node
     node_key.pem  private key of this node (mode 0600)
-    crl.der       last accepted CRL
+    crl.der       signed complete base CRL
+    crl_state.json  atomic signed base + optional cumulative delta
 
 Nothing is written before it is verified against the pinned CA, and every file is written atomically,
 so data received from intermediaries (portal, neighbours) never replaces a good copy with a broken one.
@@ -22,6 +23,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 
 from utils import atomic_write_bytes
+from pki.delta import effective_entries
 
 CA_FILE = "ca.der"
 PIN_FILE = "ca.pin"
@@ -137,6 +139,8 @@ class PkiStore:
         self.root = Path(root)
         self._env_pin = normalize_fingerprint(pinned_fingerprint)
         self._lock = threading.Lock()
+        from pki.delta import CRLCache
+        self.revocations = CRLCache(self.root)
 
     # ---- reading ---------------------------------------------------------------------------
 
@@ -158,9 +162,20 @@ class PkiStore:
         data = self._read(KEY_FILE)
         return None if data is None else serialization.load_pem_private_key(data, password=None)
 
-    def crl(self) -> Optional[x509.CertificateRevocationList]:
-        data = self._read(CRL_FILE)
-        return None if data is None else x509.load_der_x509_crl(data)
+    def crl(self):
+        return self.revocations.read()[0]
+
+    def delta(self):
+        return self.revocations.read()[1]
+
+    def revocation_number(self):
+        return self.revocations.current_number()
+
+    def update_revocation(self, data, kind="full", expected=None):
+        ca = self.ca()
+        if ca is None:
+            raise PkiError("Brak certyfikatu Root CA.")
+        return self.revocations.update(data, ca, kind, expected)
 
     def pinned_fingerprint(self) -> str:
         """Fingerprint from the configuration, otherwise the one pinned at the first install."""
@@ -211,29 +226,7 @@ class PkiStore:
         self.install_node(cert_data, key_data)
 
     def update_crl(self, data: bytes) -> bool:
-        """Stores a CRL if it is signed by the CA and newer (higher CRLNumber) than the stored one.
-
-        Returns False when the stored CRL is the same or newer (nothing to do), raises PkiError when
-        the CRL is not trustworthy. Delta-CRLs are Stage 3 and are rejected here.
-        """
-        ca = self.ca()
-        if ca is None:
-            raise PkiError("Brak certyfikatu Root CA – nie można sprawdzić CRL.")
-        crl = load_crl(data)
-        check_crl_signed_by(crl, ca)
-        if is_delta_crl(crl):
-            raise PkiError("Delta-CRL nie jest jeszcze obsługiwana – potrzebna pełna lista.")
-        number = crl_number(crl)
-        if number is None:
-            raise PkiError("CRL nie ma numeru (CRLNumber) – nie można ocenić, czy jest nowsza.")
-        if crl.next_update_utc is None:
-            raise PkiError("CRL nie ma pola nextUpdate.")
-        with self._lock:
-            current = self.crl()
-            if current is not None and number <= (crl_number(current) or -1):
-                return False
-            atomic_write_bytes(self.root / CRL_FILE, crl.public_bytes(serialization.Encoding.DER))
-        return True
+        return self.update_revocation(data)
 
     # ---- summary ---------------------------------------------------------------------------
 
@@ -255,10 +248,12 @@ class PkiStore:
                 "has_private_key": (self.root / KEY_FILE).exists(),
             },
             "crl": None if crl is None else {
-                "number": crl_number(crl),
-                "this_update": crl.last_update_utc.isoformat(),
-                "next_update": crl.next_update_utc.isoformat() if crl.next_update_utc else None,
-                "revoked_count": len(crl),
+                "number": self.revocation_number(),
+                "base_number": crl_number(crl),
+                "has_delta": self.delta() is not None,
+                "this_update": (self.delta() if self.delta() is not None else crl).last_update_utc.isoformat(),
+                "next_update": (self.delta() if self.delta() is not None else crl).next_update_utc.isoformat(),
+                "revoked_count": len(effective_entries(crl, self.delta())),
                 "size": len(crl.public_bytes(serialization.Encoding.DER)),
             },
         }

@@ -53,7 +53,8 @@ def _hours(delta) -> str:
 
 
 def verify(cert: x509.Certificate, ca: Optional[x509.Certificate],
-           crl: Optional[x509.CertificateRevocationList], now: datetime) -> Verdict:
+           crl: Optional[x509.CertificateRevocationList], now: datetime,
+           delta: Optional[x509.CertificateRevocationList] = None) -> Verdict:
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware (UTC)")
     serial = str(cert.serial_number)
@@ -89,7 +90,17 @@ def verify(cert: x509.Certificate, ca: Optional[x509.Certificate],
     if is_delta_crl(crl):
         return verdict(Status.UNKNOWN, "Delta-CRL bez pełnej listy bazowej nie wystarcza.", number)
 
-    entry = crl.get_revoked_certificate_by_serial_number(cert.serial_number)
+    if delta is not None:
+        from pki.delta import check_pair, effective_entries, number as signed_number
+        try:
+            check_pair(crl, delta, ca)
+        except PkiError as exc:
+            return verdict(Status.UNKNOWN, f"Delta-CRL odrzucona: {exc}", number)
+        entry = effective_entries(crl, delta).get(cert.serial_number)
+        number = signed_number(delta)
+        crl = delta  # pola aktualności pochodzą z podpisanej delty (RFC 5280 §5.2.4)
+    else:
+        entry = crl.get_revoked_certificate_by_serial_number(cert.serial_number)
     if entry is not None:
         try:
             reason = entry.extensions.get_extension_for_class(x509.CRLReason).value.reason.name

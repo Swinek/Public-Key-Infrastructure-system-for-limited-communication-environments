@@ -36,6 +36,8 @@ services:
       # CRL: nowa lista co CRL_REISSUE_HOURS (i przy każdym odwołaniu), ważna CRL_VALIDITY_HOURS
       CRL_REISSUE_HOURS: 24
       CRL_VALIDITY_HOURS: 168
+      CRL_EXPIRY_MARGIN_HOURS: "${CRL_EXPIRY_MARGIN_HOURS:-24}"
+      CRL_DELTA_BASES: "${CRL_DELTA_BASES:-8}"
     volumes:
       # Root CA (klucz + certyfikat) poza obrazem - przetrwa przebudowę; CRL trzymana w bazie
       - ./admin/backend/pki_data:/app/pki_data
