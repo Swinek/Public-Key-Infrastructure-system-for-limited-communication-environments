@@ -3,7 +3,8 @@
 A message or file for a node that is not a neighbour right now is not rejected: it is put into a persistent queue
 and travels with the neighbours. On every radio contact (contact.py) each side pulls from the other:
 
-    POST /api/saf/offer {"known": [<16-hex prefixes of msg_id>]}   ->  {"items": [...]}  (only the missing ones)
+    POST /api/saf/offer {"known": [<16-hex prefixes of msg_id>]}   ->  {"items": [...], "more": bool}
+                                                                        (only the missing ones, one page at a time)
     GET  /api/saf/items/<msg_id>/content                            raw bytes of a file item (size + SHA-256 checked)
 
 Decision (2026-10-24): epidemic - every node keeps a copy and offers it to every neighbour that does not know it
@@ -11,8 +12,11 @@ yet, instead of handing the custody to a single neighbour. Without knowledge of 
 is the only way to reach a node whose path is unknown; duplicates are prevented by the exchanged id lists, and the
 spread is bounded by TTL (SAF_TTL_HOURS from creation) and the hop limit (P2P_MAX_HOPS).
 
-Every node remembers the ids it has ever held or received (seen.json), so an item does not come back after it was
-delivered or expired. The destination delivers the item to its inbox / received_files and does not offer it again.
+Every node remembers the ids it has held or received (seen.json) until the item expires, so an item does not come
+back after it was delivered or handed over. After expiry the id is forgotten: every node drops an expired item and
+rejects one offered to it, so it cannot come back anyway - and the "known" list sent on every contact holds only
+items that are still alive (at most SAF_TTL_HOURS of traffic) instead of growing forever. The destination delivers
+the item to its inbox / received_files and does not offer it again.
 
 Stage 3c: the certificate request of a node without internet and the certificate issued for it travel the same way
 (relay.py). Both are public data checked by every carrier before it queues them, so garbage does not take the link
@@ -26,7 +30,7 @@ The msg_id is deterministic: copies made by different carriers are one item (no 
 Layout of DATA_DIR/saf/:
     queue.json        items carried for other nodes (metadata, message text inline)
     blobs/<msg_id>    content of file / csr / cert items
-    seen.json         every msg_id ever held or delivered here
+    seen.json         msg_id -> expiry of every item held or delivered here, until it expires
     relayed.json      requests this node handed to the portal for others (relay.py)
 """
 from __future__ import annotations
@@ -56,6 +60,8 @@ MAX_MESSAGE_CHARS = 10_000
 MAX_CSR_BYTES = 4096
 KINDS = ("msg", "file", "csr", "cert", "csr_result")
 BLOB_KINDS = ("file", "csr", "cert")  # content fetched separately (GET /api/saf/items/<msg_id>/content)
+# Order of an offer: issued certificates, rejection hints and requests before messages, files last (saf.offer).
+PRIORITY = {"cert": 0, "csr_result": 1, "csr": 2, "msg": 3, "file": 4}
 PORTAL = "portal"  # destination of csr items: the first carrier with a WAN link hands them over (relay.py)
 
 _LOCK = threading.Lock()
@@ -109,15 +115,45 @@ def queue() -> List[Dict[str, Any]]:
         return list(_load("queue.json", []))
 
 
+def _expiry(item: Dict[str, Any]) -> str:
+    """When the item expires everywhere: its expires_at, never later than SAF_TTL_HOURS from its creation."""
+    created, expires = _parse(item.get("created_at", "")), _parse(item.get("expires_at", ""))
+    cap = None if created is None else created + timedelta(hours=config.SAF_TTL_HOURS)
+    candidates = [t for t in (expires, cap) if t is not None]
+    return (min(candidates) if candidates else _now() + timedelta(hours=config.SAF_TTL_HOURS)).isoformat()
+
+
+def _load_seen(now: datetime) -> Dict[str, str]:
+    """msg_id -> expiry of the items this node remembers; expired ids are left out (caller holds _LOCK)."""
+    raw = _load("seen.json", {})
+    if isinstance(raw, list):  # older format: ids only, expiry unknown - kept for one full TTL from now
+        until = (now + timedelta(hours=config.SAF_TTL_HOURS)).isoformat()
+        raw = {i: until for i in raw if _valid_id(i)}
+        _save("seen.json", raw)  # converted once, so the TTL counts from the first read, not from every read
+    elif not isinstance(raw, dict):
+        raw = {}
+    return {k: v for k, v in raw.items() if _valid_id(k) and (_parse(v) or now) > now}
+
+
+def _remember(entries: Dict[str, str]) -> None:
+    """Adds ids to seen.json and drops the expired ones (caller holds _LOCK)."""
+    data = _load_seen(_now())
+    data.update(entries)
+    _save("seen.json", dict(sorted(data.items())))
+
+
 def seen() -> Set[str]:
     with _LOCK:
-        return set(_load("seen.json", []))
+        return set(_load_seen(_now()))
 
 
 def known_prefixes() -> List[str]:
-    """Ids this node already has (carried, delivered, expired) - sent to a neighbour so it offers only new items."""
+    """Ids of the items this node has and that have not expired yet (carried or delivered) - sent to a neighbour
+    so it offers only new items. Expired ones are not listed: no node keeps or accepts them any more."""
+    now = _now()
     with _LOCK:
-        ids = set(_load("seen.json", [])) | {i["msg_id"] for i in _load("queue.json", [])}
+        ids = set(_load_seen(now)) | {i["msg_id"] for i in _load("queue.json", [])
+                                      if (_parse(i.get("expires_at", "")) or now) > now}
     return sorted(i[:ID_PREFIX] for i in ids)
 
 
@@ -312,7 +348,7 @@ def accept(item: Dict[str, Any], content: Optional[bytes] = None) -> Tuple[str, 
         item = {**item, "hops": item["hops"] + [config.NODE_ID]}
     for_me = item["destination_id"] == config.NODE_ID
     with _LOCK:
-        seen_ids = set(_load("seen.json", []))
+        seen_ids = set(_load_seen(_now()))
         items = _load("queue.json", [])
         if item["msg_id"] in seen_ids or any(i["msg_id"] == item["msg_id"] for i in items):
             return "duplicate", {}
@@ -323,7 +359,7 @@ def accept(item: Dict[str, Any], content: Optional[bytes] = None) -> Tuple[str, 
             items = _purge_expired(items, _now())
             items.append(item)
             _save("queue.json", items)
-        _save("seen.json", sorted(seen_ids | {item["msg_id"]}))
+        _remember({item["msg_id"]: _expiry(item)})
     if for_me:
         return "delivered", _deliver(item, content)
     print(f"[SAF] queued {item['type']} {item['msg_id']} for {item['destination_id']} (hops {item['hops']})")
@@ -338,26 +374,27 @@ def accept(item: Dict[str, Any], content: Optional[bytes] = None) -> Tuple[str, 
 def drop(msg_id: str) -> bool:
     """Removes a carried item that reached its destination outside the radio links (a CSR handed to the portal).
 
-    The id stays in seen.json, so a neighbour carrying a copy does not bring it back."""
+    The id stays in seen.json until the item expires, so a neighbour carrying a copy does not bring it back."""
     with _LOCK:
         items = _load("queue.json", [])
-        kept = [i for i in items if i["msg_id"] != msg_id]
-        if len(kept) == len(items):
+        dropped = [i for i in items if i["msg_id"] == msg_id]
+        if not dropped:
             return False
-        _save("queue.json", kept)
+        _save("queue.json", [i for i in items if i["msg_id"] != msg_id])
         _blob(msg_id).unlink(missing_ok=True)
-        _save("seen.json", sorted(set(_load("seen.json", [])) | {msg_id}))
+        _remember({msg_id: _expiry(dropped[0])})
     return True
 
 
 def mark_seen(msg_id: str) -> None:
-    """A message delivered directly (neighbour in range): neighbours carrying a copy will not offer it again."""
+    """A message delivered directly (neighbour in range): neighbours carrying a copy will not offer it again.
+
+    Its expiry is unknown here, so the id is kept for one full TTL - no copy can live longer than that."""
     if not _valid_id(msg_id):
         return
     with _LOCK:
-        ids = set(_load("seen.json", []))
-        if msg_id not in ids:
-            _save("seen.json", sorted(ids | {msg_id}))
+        if msg_id not in _load_seen(_now()):
+            _remember({msg_id: (_now() + timedelta(hours=config.SAF_TTL_HOURS)).isoformat()})
 
 
 def enqueue_local(item: Dict[str, Any], content: Optional[bytes] = None) -> Dict[str, Any]:
@@ -367,23 +404,68 @@ def enqueue_local(item: Dict[str, Any], content: Optional[bytes] = None) -> Dict
     return {**details, "msg_id": item["msg_id"], "announced_to": announced}
 
 
+def carries_requests() -> bool:
+    """True when a certificate request of another node waits here to be carried to the portal."""
+    return any(i["type"] == "csr" for i in queue())
+
+
+def withhold_requests_from(peer_id: str) -> bool:
+    """Certificate requests go first only to a neighbour with a WAN link (flag in its hello, neighbours.py).
+
+    A neighbour without WAN gets them only when no neighbour in range has a WAN link right now; when the last one
+    loses it or its link goes down, the requests are released (neighbours.release_withheld). The flag is not
+    authenticated - a lying neighbour can only delay a request while it is in range, never change it."""
+    import neighbours  # neighbours imports contact, contact is imported here
+    current = neighbours.current()
+    asking = next((n for n in current if n["id"] == peer_id), None)
+    if asking is not None and asking.get("wan"):
+        return False
+    return any(n.get("wan") for n in current if n["id"] != peer_id)
+
+
 def offer(known: Iterable[str], peer_id: str) -> Tuple[List[Dict[str, Any]], int]:
     """Items a neighbour does not have yet (message text inline, file content fetched separately).
 
-    Returns (items, saved_bytes): saved = payload of the items not sent because the neighbour already knew them."""
+    Returns (items, saved_bytes): saved = payload of the items not sent because the neighbour already knew them
+    or because certificate requests are kept for a neighbour with a WAN link."""
     known = {str(k)[:ID_PREFIX] for k in known}
     with _LOCK:
         items = _purge_expired(_load("queue.json", []), _now())
         _save("queue.json", items)
-    result, saved = [], 0
+    withhold = any(i["type"] == "csr" for i in items) and withhold_requests_from(peer_id)
+    result, saved, withheld = [], 0, 0
     for item in items:
         if peer_id in item["hops"] or len(item["hops"]) >= config.P2P_MAX_HOPS:
             continue
         if item["msg_id"][:ID_PREFIX] in known:
             saved += _payload(item)
             continue
+        if withhold and item["type"] == "csr":
+            saved += _payload(item)
+            withheld += 1
+            continue
         result.append(item)
+    if withheld:
+        print(f"[SAF] {withheld} certificate request(s) kept for a neighbour with a WAN link, not offered to {peer_id}")
+    # PKI data first: a short contact (or the first page) carries certificates and requests before messages and files.
+    result.sort(key=lambda i: PRIORITY.get(i["type"], len(PRIORITY)))  # stable: queue order within a kind
     return result, saved
+
+
+def page(items: List[Dict[str, Any]], limit: Optional[int] = None) -> Tuple[List[Dict[str, Any]], bool]:
+    """First page of an offer: items in queue order up to `limit` bytes (at least one, so a page always moves on).
+
+    Returns (page, more). The neighbour asks again in the same contact; its "known" list then holds the items it
+    has just taken, so the next answer starts where this one ended."""
+    limit = config.SAF_OFFER_PAGE_BYTES if limit is None else limit
+    result, used = [], 0
+    for item in items:
+        size = wire.json_payload_size(item)
+        if result and used + size > limit:
+            return result, True
+        result.append(item)
+        used += size
+    return result, False
 
 
 def carried(msg_id: str) -> Optional[Dict[str, Any]]:
@@ -412,19 +494,37 @@ def transfer_kind(item: Dict[str, Any]) -> str:
     return "csr" if item.get("type") == "csr_result" else item.get("type")
 
 
+MAX_PAGES = 64  # per contact; whatever is left comes on the next contact
+
+
 def exchange(peer: Dict[str, Any]) -> Dict[str, int]:
-    """Contact handler (radio neighbours only): pull the items this node does not know yet."""
+    """Contact handler (radio neighbours only): pull the items this node does not know yet, page by page."""
     if peer["kind"] != contact.NEIGHBOUR:
         return {}
-    request = {"node_id": config.NODE_ID, "known": known_prefixes()}
-    fetched = wire.post_json(wire.peer_url(peer, "/api/saf/offer"), request, config.SAF_MAX_OFFER_BYTES)
-    items = fetched.json().get("items", [])
-    if not isinstance(items, list):
-        raise SafError("odpowiedź offer bez listy items")
-    inline = sum(wire.json_payload_size(i) for i in items)
-    transfers.record("saf_offer", "in", peer["id"], wire.json_payload_size(request) + len(fetched.body) - inline,
-                     fetched.wire_bytes - inline, encoding="JSON", note=f"{len(items)} new item(s)")
-    counts = {"delivered": 0, "queued": 0, "duplicate": 0, "rejected": 0}
+    counts = {"delivered": 0, "queued": 0, "duplicate": 0, "rejected": 0, "pages": 0}
+    refused: Set[str] = set()  # rejected in this contact: listed as known, so the next page does not repeat them
+    more = True
+    while more and counts["pages"] < MAX_PAGES:
+        request = {"node_id": config.NODE_ID, "known": sorted(set(known_prefixes()) | refused)}
+        fetched = wire.post_json(wire.peer_url(peer, "/api/saf/offer"), request, config.SAF_MAX_OFFER_BYTES)
+        answer = fetched.json()
+        items = answer.get("items", [])
+        if not isinstance(items, list):
+            raise SafError("odpowiedź offer bez listy items")
+        more = answer.get("more") is True and bool(items)  # an empty page with "more" would never end
+        counts["pages"] += 1
+        inline = sum(wire.json_payload_size(i) for i in items)
+        transfers.record("saf_offer", "in", peer["id"], wire.json_payload_size(request) + len(fetched.body) - inline,
+                         fetched.wire_bytes - inline, encoding="JSON",
+                         note=f"{len(items)} new item(s)" + (", more to come" if more else ""))
+        _take(peer, items, counts, refused)
+    if counts["queued"]:
+        contact.announce(f"saf-{counts['queued']}", exclude=peer["id"])
+    return counts
+
+
+def _take(peer: Dict[str, Any], items: List[Any], counts: Dict[str, int], refused: Set[str]) -> None:
+    """Checks and stores one page of items offered by a neighbour."""
     for item in items:
         kind = transfer_kind(item) if isinstance(item, dict) and item.get("type") in KINDS else "msg"
         body, wire_bytes = None, wire.json_payload_size(item)
@@ -436,6 +536,8 @@ def exchange(peer: Dict[str, Any]) -> Dict[str, int]:
                 validate(item, body)
         except (SafError, wire.WireError) as exc:
             counts["rejected"] += 1
+            if isinstance(item, dict) and isinstance(item.get("msg_id"), str):
+                refused.add(item["msg_id"][:ID_PREFIX])
             transfers.record(kind, "in", peer["id"], len(body or b""), wire_bytes, status="rejected",
                              number=item.get("msg_id") if isinstance(item, dict) else None, note=str(exc)[:200])
             print(f"[SAF] item {item.get('msg_id') if isinstance(item, dict) else '?'} from {peer['id']} "
@@ -447,9 +549,6 @@ def exchange(peer: Dict[str, Any]) -> Dict[str, int]:
         transfers.record(kind, "in", peer["id"], _payload(item), wire_bytes, status=status,
                          encoding="DER" if item["type"] in ("csr", "cert") else None, number=item["msg_id"],
                          note=f"{details.get('status', outcome).lower()} (for {item['destination_id']})")
-    if counts["queued"]:
-        contact.announce(f"saf-{counts['queued']}", exclude=peer["id"])
-    return counts
 
 
 exchange.__name__ = "saf_exchange"

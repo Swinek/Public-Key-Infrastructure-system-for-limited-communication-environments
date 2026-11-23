@@ -102,6 +102,59 @@ def test_own_proof_round_trip(auth):
     assert result["authenticated"] is True and result["peer"] == "client_1"
 
 
+def test_node_of_edge_app(auth):
+    """app_N to Edge app węzła client_N – tego CN wymaga się od certyfikatu partnera."""
+    assert auth.node_of("app_2") == "client_2"
+    assert auth.node_of("app_13") == "client_13"
+
+
+def test_proof_with_certificate_of_another_node_is_rejected(auth, ca):
+    """Ważny certyfikat client_3 nie uwierzytelnia partnera, od którego oczekiwano client_2."""
+    nonce = auth.issue_challenge()
+    cert_pem, sig = _peer_proof(auth, ca, nonce, cn="client_3", not_after=NOW + 3650 * DAY)
+    result = auth.verify_proof(nonce, cert_pem, sig, expected_node="client_2")
+    assert result["authenticated"] is False
+    assert result["peer"] == "client_3" and "client_2" in result["reason"]
+    assert result["verdict"]["status"] == "valid"  # certyfikat sam w sobie jest ważny
+
+    nonce = auth.issue_challenge()
+    cert_pem, sig = _peer_proof(auth, ca, nonce, cn="client_2", not_after=NOW + 3650 * DAY)
+    assert auth.verify_proof(nonce, cert_pem, sig, expected_node="client_2")["authenticated"] is True
+
+
+class _Response:
+    def __init__(self, body):
+        self.body, self.ok, self.status_code = body, True, 200
+
+    def json(self):
+        return self.body
+
+
+@pytest.mark.parametrize("peer_cn, authenticated", [("client_2", True), ("client_3", False)])
+def test_peer_must_present_certificate_of_chosen_node(auth, ca, monkeypatch, peer_cn, authenticated):
+    """app_1 uwierzytelnia app_2: pod adresem app_2 odpowiada węzeł z ważnym certyfikatem peer_cn."""
+    cert, key = ca.issue(peer_cn, not_after=NOW + 3650 * DAY)
+    monkeypatch.setattr(auth, "ensure_certificate", lambda: None)
+
+    def fake_get(url, timeout):
+        return _Response({"app_id": "app_2", "nonce": "peer-nonce", "expires_in": 60})
+
+    def fake_post(url, json, timeout):
+        if url.endswith("/api/auth/verify"):  # partner przyjmuje nasz dowód
+            return _Response({"authenticated": True, "reason": "ok", "peer": "client_1", "verdict": None})
+        signature = auth.sign(key, auth.signed_message(json["nonce"], json["verifier"]))
+        return _Response({"app_id": "app_2", "certificate": pem(cert).decode(),
+                          "signature": base64.b64encode(signature).decode()})
+
+    monkeypatch.setattr(auth.requests, "get", fake_get)
+    monkeypatch.setattr(auth.requests, "post", fake_post)
+    result = auth.authenticate_peer(auth.PeerRequest(peer="app_2"))
+    assert result["authenticated"] is authenticated
+    assert result["we_verified_peer"]["peer"] == peer_cn
+    if not authenticated:
+        assert "client_2" in result["we_verified_peer"]["reason"]
+
+
 def test_api_challenge_and_peer_validation(auth, monkeypatch):
     refreshed = []
     monkeypatch.setattr(auth, "ensure_certificate", lambda: refreshed.append(True))

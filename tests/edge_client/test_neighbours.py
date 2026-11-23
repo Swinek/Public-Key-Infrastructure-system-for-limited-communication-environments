@@ -101,3 +101,49 @@ def test_default_recipient_requires_single_neighbour(mods):
     with pytest.raises(routing.NoRouteError):
         routing.resolve_destination(None)  # dwóch sąsiadów – trzeba podać odbiorcę
     assert routing.resolve_destination("client_3") == "client_3"
+
+
+def _wan_pkt(kind: str, node_id: str, wan) -> bytes:
+    return json.dumps({"t": kind, "id": node_id, "name": node_id, "port": 8000, "wan": wan}).encode()
+
+
+def test_hello_carries_own_wan_flag(mods, monkeypatch):
+    neighbours, _ = mods
+    monkeypatch.setattr(neighbours, "has_default_gateway", lambda: True)
+    assert json.loads(neighbours.packet("hello"))["wan"] is True
+    monkeypatch.setattr(neighbours, "has_default_gateway", lambda: False)
+    assert json.loads(neighbours.packet("hello-ack"))["wan"] is False
+
+
+def test_wan_flag_of_neighbour_is_stored_and_its_loss_detected(mods):
+    neighbours, _ = mods
+    # Starszy węzeł bez flagi: brak łącza WAN.
+    assert neighbours.handle_packet(_pkt("hello", "client_2"), "192.168.12.20")["wan"] is False
+    entry = neighbours.handle_packet(_wan_pkt("hello", "client_2", True), "192.168.12.20")
+    assert entry["wan"] is True and entry["lost_wan"] is False
+    assert neighbours.current()[0]["wan"] is True
+    # `client.sh internet off` u sąsiada: nowe hello z wan=false.
+    entry = neighbours.handle_packet(_wan_pkt("hello", "client_2", False), "192.168.12.20")
+    assert entry["wan"] is False and entry["lost_wan"] is True
+    # Tylko wartość true oznacza łącze WAN (np. "yes" z uszkodzonego pakietu - nie).
+    assert neighbours.handle_packet(_wan_pkt("hello", "client_3", "yes"), "192.168.13.30")["wan"] is False
+
+
+def test_refresh_releases_requests_when_wan_neighbour_link_goes_down(mods, monkeypatch):
+    neighbours, _ = mods
+    contact = importlib.import_module("contact")
+    saf = importlib.import_module("saf")
+    announced = []
+    monkeypatch.setattr(contact, "announce", lambda reason, exclude=None, wait=False: announced.append(reason) or ["client_3"])
+    monkeypatch.setattr(saf, "carries_requests", lambda: True)
+    neighbours.handle_packet(_wan_pkt("hello", "client_2", True), "192.168.12.20")
+    neighbours.handle_packet(_wan_pkt("hello", "client_3", False), "192.168.13.30")
+
+    # Łącza bez zmian: nic nie jest wysyłane.
+    assert neighbours.refresh()["lost_wan_neighbours"] == [] and announced == []
+
+    # link down 1 2: znika jedyny sąsiad z WAN -> wnioski trafiają do pozostałych sąsiadów.
+    only_13 = [i for i in neighbours.parse_ip_addr(IP_ADDR_OUTPUT) if i["ip"] == "192.168.13.10"]
+    monkeypatch.setattr(neighbours, "p2p_interfaces", lambda: only_13)
+    result = neighbours.refresh()
+    assert result["lost_wan_neighbours"] == ["client_2"] and announced == ["saf-csr"]

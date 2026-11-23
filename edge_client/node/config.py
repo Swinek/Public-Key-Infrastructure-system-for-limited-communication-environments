@@ -35,6 +35,9 @@ MAX_SUMMARY_BYTES = int(os.getenv("MAX_SUMMARY_BYTES", str(16 * 1024)))
 SAF_TTL_HOURS = float(os.getenv("SAF_TTL_HOURS", "168"))  # a copy is dropped after this time (7 days)
 SAF_MAX_FILE_BYTES = int(os.getenv("SAF_MAX_FILE_BYTES", str(5 * 1024 * 1024)))
 SAF_MAX_OFFER_BYTES = int(os.getenv("SAF_MAX_OFFER_BYTES", str(1024 * 1024)))
+# One offer answer carries at most this many bytes of items; the rest comes in the next page of the same contact,
+# so a long queue never exceeds SAF_MAX_OFFER_BYTES and never blocks the exchange (saf.page).
+SAF_OFFER_PAGE_BYTES = min(int(os.getenv("SAF_OFFER_PAGE_BYTES", str(256 * 1024))), SAF_MAX_OFFER_BYTES // 2)
 
 # Edge app of this node (diagram arrow "cert"): reachable only over the node's own mgmt_N network.
 # Only this host may download a certificate together with its private key (GET /api/certs/bundle).

@@ -29,12 +29,13 @@ def _wire(request: Request, response: Response, request_body: int) -> int:
 async def offer(request: Request, body: OfferRequest):
     peer = peer_id(request, body.node_id)
     items, saved = saf.offer(body.known, peer)
-    response = JSONResponse({"items": items})
+    items, more = saf.page(items)  # the rest in the next page of the same contact
+    response = JSONResponse({"items": items, "more": more})
     inline = sum(wire.json_payload_size(i) for i in items)
     request_body = int(request.headers.get("content-length") or 0)
     transfers.record("saf_offer", "out", peer, request_body + len(response.body) - inline,
                      _wire(request, response, request_body) - inline, saved_bytes=saved, encoding="JSON",
-                     note=f"{len(items)} item(s) offered")
+                     note=f"{len(items)} item(s) offered" + (", more to come" if more else ""))
     for item in items:
         if item["type"] == "msg":  # file / csr / cert content is recorded when it is downloaded
             transfers.record("msg", "out", peer, len(item["message"].encode()), wire.json_payload_size(item),

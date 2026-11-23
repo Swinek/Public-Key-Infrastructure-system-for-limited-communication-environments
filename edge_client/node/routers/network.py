@@ -51,6 +51,12 @@ def discover_neighbours(network: Optional[str] = None):
     return {"node_id": config.NODE_ID, "hello_sent_on": sent_on}
 
 
+@router.post("/api/neighbours/refresh",
+             summary="Drop neighbours whose link is gone (called by `client.sh link down`, no radio traffic)")
+def refresh_neighbours():
+    return {"node_id": config.NODE_ID, **neighbours.refresh()}
+
+
 @router.get("/api/clock", summary="Query external Clock API")
 def get_external_clock(timeout: float = 3.0):
     primary_msg = None

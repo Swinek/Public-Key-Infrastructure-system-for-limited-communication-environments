@@ -210,7 +210,7 @@ function NeighboursPanel({ peers }) {
       <table className="w-full text-xs">
         <thead className="text-[11px] text-slate-400 bg-slate-50/60">
           <tr>
-            {["Node", "ID", "Address", "Connected since"].map((h) => <th key={h} className="text-left font-medium px-4 py-2">{h}</th>)}
+            {["Node", "ID", "Address", "WAN", "Connected since"].map((h) => <th key={h} className="text-left font-medium px-4 py-2">{h}</th>)}
           </tr>
         </thead>
         <tbody>
@@ -219,11 +219,16 @@ function NeighboursPanel({ peers }) {
               <td className="px-4 py-2 font-semibold text-slate-900">{p.name}</td>
               <td className="px-4 py-2 font-mono text-[11px] text-slate-500">{p.id}</td>
               <td className="px-4 py-2 font-mono text-[11px]">{p.ip}:{p.port}</td>
+              <td className="px-4 py-2">
+                {p.wan
+                  ? <span className="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[11px] font-medium" title="Neighbour has a WAN link to the centre (hello flag) - carried certificate requests go to it first">online</span>
+                  : <span className="text-slate-400 text-[11px]">—</span>}
+              </td>
               <td className="px-4 py-2">{new Date(p.connected_since * 1000).toLocaleTimeString()}</td>
             </tr>
           ))}
           {peers.length === 0 && (
-            <tr><td colSpan="4" className="text-center py-10 text-slate-400">No neighbours in radio range.</td></tr>
+            <tr><td colSpan="5" className="text-center py-10 text-slate-400">No neighbours in radio range.</td></tr>
           )}
         </tbody>
       </table>

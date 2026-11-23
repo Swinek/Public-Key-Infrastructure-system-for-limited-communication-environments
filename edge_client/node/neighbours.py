@@ -14,6 +14,13 @@ moment when Stage 3 exchanges (CRL/CA sync, store-and-forward) run over this lin
 
 Hello packets are not authenticated - they only say who is on the link. Data exchanged with a
 neighbour is verified separately (CA signature); authenticating the neighbour itself is Stage 4.
+
+WAN flag: every hello / hello-ack says whether its sender has a WAN link to the centre right now ("wan").
+The sender checks it locally (a default route exists only while the node is on internet_net - all other
+networks are internal), so it costs no extra packet. `client.sh internet on/off` makes the node send a new
+hello on all its links, so the neighbours learn the change. saf.py uses the flag to give a carried
+certificate request first only to a neighbour with a WAN link. The flag is an unauthenticated hint: it decides
+only who gets a copy first, never whether a request is accepted.
 """
 import ipaddress
 import json
@@ -25,6 +32,7 @@ from typing import Any, Dict, List, Optional
 
 import config
 import contact
+from utils import has_default_gateway
 
 _LOCK = threading.Lock()
 _TABLE: Dict[str, Dict[str, Any]] = {}
@@ -67,16 +75,22 @@ def p2p_interfaces() -> List[Dict[str, str]]:
     return parse_ip_addr(out)
 
 
+def wan_up() -> bool:
+    """True while this node has a WAN link to the centre (internet_net is the only network with a gateway)."""
+    return has_default_gateway()
+
+
 def packet(kind: str) -> bytes:
     return json.dumps(
-        {"t": kind, "id": config.NODE_ID, "name": config.NODE_NAME, "port": config.PORT},
+        {"t": kind, "id": config.NODE_ID, "name": config.NODE_NAME, "port": config.PORT, "wan": wan_up()},
         separators=(",", ":"),
     ).encode()
 
 
 def handle_packet(data: bytes, src_ip: str, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
     """Registers the sender of a hello / hello-ack. Returns the neighbour entry (with "reply": True
-    for a hello, which must be answered with a hello-ack), or None when the packet is ignored."""
+    for a hello, which must be answered with a hello-ack, and "lost_wan": True when the neighbour had
+    a WAN link and does not have it any more), or None when the packet is ignored."""
     now = time.time() if now is None else now
     try:
         if ipaddress.ip_address(src_ip) not in _P2P_NET:
@@ -94,8 +108,10 @@ def handle_packet(data: bytes, src_ip: str, now: Optional[float] = None) -> Opti
         if entry is None or entry["ip"] != src_ip:
             entry = {"id": node_id, "connected_since": now}
             _TABLE[node_id] = entry
-        entry.update({"name": str(msg.get("name") or node_id), "ip": src_ip, "port": port})
-        return {**entry, "reply": kind == HELLO}
+        had_wan = entry.get("wan") is True
+        wan = msg.get("wan") is True  # older nodes send no flag: no WAN assumed
+        entry.update({"name": str(msg.get("name") or node_id), "ip": src_ip, "port": port, "wan": wan})
+        return {**entry, "reply": kind == HELLO, "lost_wan": had_wan and not wan}
 
 
 def current(interfaces: Optional[List[Dict[str, str]]] = None) -> List[Dict[str, Any]]:
@@ -153,6 +169,27 @@ def discover(network: Optional[str] = None) -> List[str]:
     return used
 
 
+def release_withheld(exclude: Optional[str] = None) -> List[str]:
+    """No neighbour with a WAN link any more: tell the other neighbours to pull the certificate requests
+    that were kept for that neighbour (saf.offer). Nothing is sent when no request is carried here."""
+    import saf  # saf imports this module
+    if any(n.get("wan") for n in current()) or not saf.carries_requests():
+        return []
+    print("[HELLO] No neighbour with a WAN link - carried certificate requests offered to all neighbours")
+    return contact.announce("saf-csr", exclude=exclude)
+
+
+def refresh() -> Dict[str, Any]:
+    """Drops neighbours whose link is gone (called by `client.sh link down`, no radio traffic). When one of them
+    had a WAN link, the requests kept for it are released to the remaining neighbours."""
+    with _LOCK:
+        wan_before = {k for k, v in _TABLE.items() if v.get("wan")}
+    remaining = current()
+    lost = sorted(wan_before - {n["id"] for n in remaining})
+    announced = release_withheld() if lost else []
+    return {"neighbours": [n["id"] for n in remaining], "lost_wan_neighbours": lost, "announced_to": announced}
+
+
 def _receive_loop() -> None:
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -165,6 +202,8 @@ def _receive_loop() -> None:
             # Contact with this neighbour: the receiver of a hello and the receiver of the hello-ack
             # each start their own exchange with the other (contact.py).
             contact.on_neighbour(entry)
+            if entry["lost_wan"]:
+                release_withheld(exclude=entry["id"])
             if not entry["reply"]:
                 continue
             src = ipaddress.ip_address(src_ip)

@@ -114,6 +114,8 @@ set_internet() {
                 # Alias inet-<id> resolves only via internet_net (used by /api/internet/test).
                 docker network connect --alias "inet-$client" "$INTERNET_NET" "$client"
                 echo -e "${GREEN}[+] $client: Internet access ENABLED (ONLINE).${NC}"
+                # WAN state changed: one hello on every radio link carries the new WAN flag to the neighbours.
+                docker exec "$client" curl -s -X POST http://localhost:8000/api/neighbours/discover >/dev/null || true
             fi
             # Contact with the portal: the node starts its WAN exchanges (also on a repeated `internet on`).
             docker exec "$client" curl -s -X POST http://localhost:8000/api/contact/wan >/dev/null || true
@@ -121,6 +123,7 @@ set_internet() {
             if has_internet_access "$client"; then
                 docker network disconnect "$INTERNET_NET" "$client"
                 echo -e "${YELLOW}[-] $client: Internet access DISABLED (OFFLINE).${NC}"
+                docker exec "$client" curl -s -X POST http://localhost:8000/api/neighbours/discover >/dev/null || true
             else
                 echo -e "${CYAN}[i] $client: Internet is ALREADY disabled (OFFLINE).${NC}"
             fi
@@ -198,6 +201,12 @@ set_link() {
     done
 
     if [ "$action" = "down" ]; then
+        # Both ends drop the neighbour at once (local check, no radio traffic); if it was the only neighbour
+        # with a WAN link, the certificate requests kept for it are offered to the remaining neighbours.
+        for client in "$a" "$b"; do
+            is_container_running "$client" && \
+                docker exec "$client" curl -s -X POST http://localhost:8000/api/neighbours/refresh >/dev/null || true
+        done
         echo -e "${YELLOW}[-] Radio link $a <-> $b is DOWN.${NC}"
     else
         # Link established: node a sends ONE hello on this link only, node b answers with one hello-ack.

@@ -77,7 +77,7 @@ def test_message_for_node_out_of_range_is_queued(client, node):
 
 def test_carried_item_is_queued_and_passed_on(node, monkeypatch):
     sent = _offer_from(node, monkeypatch, [_item()])
-    assert node.exchange(NEIGHBOUR) == {"delivered": 0, "queued": 1, "duplicate": 0, "rejected": 0}
+    assert node.exchange(NEIGHBOUR) == {"delivered": 0, "queued": 1, "duplicate": 0, "rejected": 0, "pages": 1}
     assert node.queue()[0]["hops"] == ["client_1", "client_2"]
     assert node.announced == ["client_1"]  # dalej, ale nie do źródła
 
@@ -152,3 +152,123 @@ def test_transit_message_received_directly_is_kept_for_store_and_forward(client,
     body = client.post("/api/p2p/receive-message", json=msg).json()
     assert body["status"] == "QUEUED" and node.queue()[0]["hops"] == ["client_1", "client_2"]
     assert client.post("/api/p2p/receive-message", json=msg).json()["status"] == "DUPLICATE"
+
+
+def _csr_item(msg_id="f" * 64, hops=("client_3",)):
+    return {**_item(msg_id=msg_id, destination="portal", hops=hops), "type": "csr", "size": 300, "sha256": msg_id}
+
+
+def _neighbours_in_range(monkeypatch, wan_of_1: bool):
+    """client_2 ma łącza p2p_12 (client_1) i p2p_23 (client_3); client_1 zgłasza w hello flagę WAN."""
+    neighbours = importlib.import_module("neighbours")
+    ifaces = [{"ifname": "eth1", "ip": "192.168.12.20", "network": "192.168.12.0/24", "broadcast": "192.168.12.255"},
+              {"ifname": "eth2", "ip": "192.168.23.20", "network": "192.168.23.0/24", "broadcast": "192.168.23.255"}]
+    monkeypatch.setattr(neighbours, "p2p_interfaces", lambda: ifaces)
+    for node_id, ip, wan in (("client_1", "192.168.12.10", wan_of_1), ("client_4", "192.168.23.40", False)):
+        pkt = json.dumps({"t": "hello", "id": node_id, "name": node_id, "port": 8000, "wan": wan}).encode()
+        neighbours.handle_packet(pkt, ip)
+
+
+def test_request_goes_first_only_to_neighbour_with_wan(node, monkeypatch):
+    node.accept(_csr_item(), b"x" * 300)
+    node.accept(_item(msg_id="1" * 32, hops=("client_3",)))
+    _neighbours_in_range(monkeypatch, wan_of_1=True)
+    # Sąsiad bez WAN dostaje wiadomość, ale nie wniosek – ten czeka na client_1 z łączem WAN.
+    items, saved = node.offer([], "client_4")
+    assert [i["type"] for i in items] == ["msg"] and saved == 300
+    # Sąsiad z WAN dostaje wniosek.
+    assert sorted(i["type"] for i in node.offer([], "client_1")[0]) == ["csr", "msg"]
+
+
+def test_request_goes_to_all_when_no_neighbour_has_wan(node, monkeypatch):
+    node.accept(_csr_item(), b"x" * 300)
+    _neighbours_in_range(monkeypatch, wan_of_1=False)
+    assert [i["type"] for i in node.offer([], "client_4")[0]] == ["csr"]
+    assert node.carries_requests() is True
+
+
+def test_known_list_holds_only_items_that_have_not_expired(node, monkeypatch):
+    # Element odebrany i przekazany dalej (wniosek oddany do portalu): jego id jest znane do wygaśnięcia.
+    node.accept(_item(msg_id="2" * 32, hops=("client_3",)))
+    assert node.drop("2" * 32) is True
+    assert "2" * 16 in node.known_prefixes()
+    # Kopia od innego sąsiada nie wraca, dopóki element żyje.
+    assert node.accept(_item(msg_id="2" * 32, hops=("client_4",)))[0] == "duplicate"
+
+    # Po wygaśnięciu (TTL 1 h w _item) id znika z listy wysyłanej przy każdym kontakcie i z seen.json.
+    later = datetime.now(timezone.utc) + timedelta(hours=2)
+    monkeypatch.setattr(node, "_now", lambda: later)
+    assert node.known_prefixes() == []
+    assert node.seen() == set()
+    node.mark_seen("3" * 32)  # zapis czyści wygasłe wpisy z pliku
+    saved = json.loads((node._dir() / "seen.json").read_text(encoding="utf-8"))
+    assert list(saved) == ["3" * 32]
+
+
+def test_old_seen_list_is_kept_for_one_ttl(node, monkeypatch):
+    # Stary format seen.json (same id, bez czasu wygaśnięcia): id pamiętane przez jeden pełny TTL od teraz.
+    node._save("seen.json", ["4" * 32])
+    assert node.known_prefixes() == ["4" * 16]
+    later = datetime.now(timezone.utc) + timedelta(hours=node.config.SAF_TTL_HOURS + 1)
+    monkeypatch.setattr(node, "_now", lambda: later)
+    assert node.known_prefixes() == []
+
+
+def test_offer_is_split_into_pages(node):
+    items = [_item(msg_id=str(d) * 32, message="x" * 100) for d in range(5, 9)]
+    size = len(json.dumps(items[0], separators=(",", ":"), ensure_ascii=False).encode())
+    first, more = node.page(items, limit=2 * size)
+    assert [i["msg_id"] for i in first] == [items[0]["msg_id"], items[1]["msg_id"]] and more is True
+    assert node.page(items[2:], limit=2 * size) == (items[2:], False)
+    # Element większy niż limit idzie sam - porcja zawsze posuwa wymianę naprzód.
+    assert node.page(items, limit=1) == ([items[0]], True)
+
+
+def _paged_neighbour(node, monkeypatch, items, limit):
+    """Sąsiad, który odsyła brakujące elementy porcjami po `limit` bajtów (jak routers/saf.py)."""
+    wire = importlib.import_module("wire")
+    calls = []
+
+    def post_json(url, payload, max_bytes):
+        calls.append(payload)
+        missing = [i for i in items if i["msg_id"][:16] not in payload["known"]]
+        page, more = node.page(missing, limit=limit)
+        body = json.dumps({"items": page, "more": more}).encode()
+        assert len(body) <= max_bytes
+        return wire.Fetched(200, body, len(body) + 200)
+
+    monkeypatch.setattr(wire, "post_json", post_json)
+    return calls
+
+
+def test_long_queue_is_taken_page_by_page_in_one_contact(node, monkeypatch):
+    items = [_item(msg_id=f"{d:x}" * 32, message="x" * 100) for d in range(1, 8)]
+    size = len(json.dumps(items[0], separators=(",", ":"), ensure_ascii=False).encode())
+    calls = _paged_neighbour(node, monkeypatch, items, limit=3 * size)
+    counts = node.exchange(NEIGHBOUR)
+    assert counts["queued"] == 7 and counts["pages"] == 3
+    # Każda kolejna prośba zawiera już elementy z poprzedniej porcji.
+    assert [len(c["known"]) for c in calls] == [0, 3, 6]
+
+
+def test_rejected_item_is_not_offered_again_in_the_next_page(node, monkeypatch):
+    expired = _item(msg_id="9" * 32)
+    expired["expires_at"] = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    items = [expired] + [_item(msg_id=f"{d:x}" * 32) for d in range(1, 4)]
+    size = len(json.dumps(items[1], separators=(",", ":"), ensure_ascii=False).encode())
+    calls = _paged_neighbour(node, monkeypatch, items, limit=size)
+    counts = node.exchange(NEIGHBOUR)
+    assert counts["rejected"] == 1 and counts["queued"] == 3 and counts["pages"] == 4
+    assert "9" * 16 in calls[1]["known"]  # odrzucony nie wraca w kolejnej porcji
+
+
+def test_pki_items_are_offered_before_messages_and_files(node):
+    data = b"plik"
+    node.accept({**_item(msg_id="a1" * 16, hops=("client_3",)), "type": "file", "filename": "f.txt",
+                 "content_type": "text/plain", "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}, data)
+    node.accept(_item(msg_id="b2" * 16, hops=("client_3",)))
+    node.accept(_csr_item(msg_id="c3" * 32))
+    node.accept(_item(msg_id="d4" * 16, hops=("client_3",)))
+    items, _ = node.offer([], "client_4")
+    # Wniosek idzie pierwszy, potem wiadomości w kolejności przyjęcia, plik na końcu.
+    assert [(i["type"], i["msg_id"][:2]) for i in items] == [("csr", "c3"), ("msg", "b2"), ("msg", "d4"), ("file", "a1")]

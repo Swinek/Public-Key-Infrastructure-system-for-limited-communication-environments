@@ -7,6 +7,9 @@ Protocol (both directions, so each app proves possession of its private key to t
     3. verifier checks the signature with the public key of the presented certificate
        and the certificate itself offline (chain to Root CA, validity, local CRL)  POST /api/auth/verify
 The verifier id in the signed message binds the proof to one verifier, so it cannot be replayed to another app.
+The initiator (POST /api/auth/peer) also checks that the peer's certificate belongs to the node it chose:
+app_N is the edge app of node client_N, so its certificate must have CN = client_N. A valid certificate of another
+node answering at that address is rejected.
 """
 import base64
 import re
@@ -105,8 +108,16 @@ def _common_name(cert: x509.Certificate) -> str:
     return attrs[0].value if attrs else ""
 
 
-def verify_proof(nonce: str, certificate_pem: str, signature_b64: str) -> Dict[str, Any]:
-    """Checks a proof presented to this app. Never raises on a bad proof - returns authenticated=False."""
+def node_of(app_id: str) -> str:
+    """Node of an edge app (CN of its certificate): app_N belongs to client_N (docker-compose.edge.yml)."""
+    return "client_" + app_id.split("_", 1)[1]
+
+
+def verify_proof(nonce: str, certificate_pem: str, signature_b64: str,
+                 expected_node: Optional[str] = None) -> Dict[str, Any]:
+    """Checks a proof presented to this app. Never raises on a bad proof - returns authenticated=False.
+
+    expected_node: CN the certificate must have (the node this app chose to authenticate), None = any node."""
     def result(ok: bool, reason: str, cert: Optional[x509.Certificate] = None, verdict=None) -> Dict[str, Any]:
         return {
             "authenticated": ok,
@@ -126,6 +137,9 @@ def verify_proof(nonce: str, certificate_pem: str, signature_b64: str) -> Dict[s
     verdict = pki.check_certificate(certificate_pem.encode())
     if not verdict.ok:
         return result(False, f"Certyfikat odrzucony ({verdict.status.value}): {verdict.reason}", cert, verdict)
+    if expected_node is not None and _common_name(cert) != expected_node:
+        return result(False, f"Certyfikat należy do '{_common_name(cert) or '?'}', a nie do partnera {expected_node}.",
+                      cert, verdict)
     if not signature_valid(cert, signature, signed_message(nonce, config.APP_ID)):
         return result(False, "Podpis wyzwania nie pasuje do klucza publicznego certyfikatu.", cert, verdict)
     return result(True, "Certyfikat ważny i potwierdzone posiadanie klucza prywatnego.", cert, verdict)
@@ -194,7 +208,8 @@ def authenticate_peer(body: PeerRequest):
 
     if resp.ok:
         peer_proof = resp.json()
-        we_verified_peer = verify_proof(nonce, peer_proof["certificate"], peer_proof["signature"])
+        we_verified_peer = verify_proof(nonce, peer_proof["certificate"], peer_proof["signature"],
+                                        expected_node=node_of(peer))
     else:
         consume_challenge(nonce)
         detail = resp.json().get("detail", resp.text)
